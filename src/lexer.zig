@@ -74,6 +74,40 @@ pub const Token = struct {
         keyword_true,
         keyword_until,
         keyword_while,
+
+        pub const Precedence = enum(u8) {
+            none,
+            logic_or,
+            logic_and,
+            comparison,
+            bitwise_or,
+            bitwise_and,
+            bit_shift,
+            str_concat,
+            add,
+            mul,
+            negate,
+            exponent,
+            func_call, // This is for function calls, member access, and subscript access
+        };
+
+        pub fn precedence(tag: Tag, is_prefix: bool) u8 {
+            return switch (tag) {
+                .keyword_or => .logic_or,
+                .keyword_and => .logic_and,
+                .@"=", .@"~=", .@"<", .@">", .@"<=", .@">=" => .comparison,
+                .@"|" => .bitwise_or,
+                .@"&" => .bitwise_and,
+                .@"<<", .@">>" => .bit_shift,
+                .@".." => .str_concat,
+                .@"+" => .add,
+                .@"*", .@"/", .@"//", .@"%" => .mul,
+                .@"#", .@"~", .keyword_not => .negate,
+                .@"-" => if (is_prefix) .negate else .add,
+                .@"^" => .exponent,
+                else => 0,
+            };
+        }
     };
 
     pub const keywords = std.StaticStringMap(Tag).initComptime(.{

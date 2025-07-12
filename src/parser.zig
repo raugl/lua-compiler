@@ -57,265 +57,12 @@
 
 const std = @import("std");
 const lx = @import("lexer.zig");
-const ast = @import("ast_node.zig");
-
-const Token = lx.Token;
-const Lexer = lx.Lexer;
-const Index = u32;
-
-// const tagCast = Key.Tag.tagCast;
-// const null_index = std.math.maxInt(Index);
-//
-// pub const Node = struct {
-//     tag: Tag,
-//     data: struct {
-//         lhs: u32,
-//         rhs: u32,
-//     },
-//
-//     pub const Tag = enum {
-//         // zig fmt: off
-//         assignment,               // lhs: var_list, rhs: exp_list
-//         func_call,                // lhs: name, rhs: arg_list
-//         label,                    // string
-//         @"break",                 // none
-//         goto,                     // string
-//         while_loop,               // lhs: cond, rhs: body
-//         repeat_until,             // lhs: cond, rhs: body
-//         if_do,                    // lhs: cond, rhs: body
-//         if_else,                  // lhs: cond, rhs: body -> else
-//         for_iter,                 // lhs: name, rhs: start -> end, body
-//         for_iter_step,            // lhs: name, rhs: start -> end, step, body
-//         for_each,                 // lhs: name_list -> exp_list, rhs: body
-//         func_def,                 // lhs: name -> param_list, rhs: body
-//         local_func_def,           // lhs: name -> param_list, rhs: body
-//         local_var_decl,           // lhs: name_list, rhs: exp_list // NOTE: Ignoring attributes
-//         // zig fmt: on
-//     };
-// };
-
-// pub const _Node = struct {
-//     tag: Tag,
-//     data: Data = undefined,
-//     next: Index = null_index,
-//     list_len: u16 = 0,
-//     token_tag: Token.Tag,
-//     // loc_start: Index,
-//
-//     const Data = struct {
-//         lhs: Index,
-//         rhs: Index,
-//     };
-//
-//     pub const Tag = enum(u8) {
-//         // zig fmt: off
-//         assignment,               // lhs: var_list, rhs: exp_list
-//         func_call,                // lhs: name, rhs: arg_list
-//         label,                    // string
-//         @"break",                 // none
-//         goto,                     // string
-//         while_loop,               // lhs: cond, rhs: body
-//         repeat_until,             // lhs: cond, rhs: body
-//         if_do,                    // lhs: cond, rhs: body
-//         if_else,                  // lhs: cond, rhs: body -> else
-//         for_iter,                 // lhs: name, rhs: start -> end, body
-//         for_iter_step,            // lhs: name, rhs: start -> end, step, body
-//         for_each,                 // lhs: name_list -> exp_list, rhs: body
-//         func_def,                 // lhs: name -> param_list, rhs: body
-//         local_func_def,           // lhs: name -> param_list, rhs: body
-//         local_var_decl,           // lhs: name_list, rhs: exp_list // NOTE: Ignoring attributes
-//         // zig fmt: on
-//
-//         logic_or,
-//         logic_not,
-//         logic_and,
-//         less_than,
-//         greater_than,
-//         less_or_equal,
-//         greater_or_equal,
-//         not_equal,
-//         equal,
-//         bit_or,
-//         bit_not,
-//         bit_and,
-//         bit_shift_left,
-//         bit_shift_right,
-//         str_concat,
-//         add,
-//         sub,
-//         mul,
-//         div,
-//         int_div,
-//         modulo,
-//         length,
-//         negate,
-//         exponent,
-//         identifier,
-//         literal_nil,
-//         literal_true,
-//         literal_false,
-//         literal_int,
-//         literal_float,
-//         literal_string,
-//
-//         var_list = 256,
-//         exp_list = 320,
-//         arg_list = 384,
-//         name_list = 448,
-//         param_list = 512,
-//         statement_list = 576,
-//         _,
-//
-//         pub fn listLen(tag: Tag) u32 {
-//             switch (tag) {
-//                 0...256 => unreachable,
-//                 else => @intFromEnum(tag) - 256,
-//             }
-//         }
-//
-//         pub fn makeLen(tag: Tag, len: u32) Tag {
-//             switch (tag) {
-//                 .var_list,
-//                 .exp_list,
-//                 .arg_list,
-//                 .param_list,
-//                 .statement_list,
-//                 => return @intFromEnum(tag) + len,
-//                 else => unreachable,
-//             }
-//         }
-//
-//         pub fn isUnaryOp(tag: Tag) bool {
-//             return switch (tag) {
-//                 .logic_not, .bit_not, .length, .negate => true,
-//                 else => false,
-//             };
-//         }
-//
-//         pub fn isBinaryOp(tag: Tag) bool {
-//             return switch (tag) {
-//                 .logic_or,
-//                 .logic_and,
-//                 .less_than,
-//                 .greater_than,
-//                 .less_or_equal,
-//                 .greater_or_equal,
-//                 .not_equal,
-//                 .equal,
-//                 .bit_or,
-//                 .bit_and,
-//                 .bit_shift_left,
-//                 .bit_shift_right,
-//                 .str_concat,
-//                 .add,
-//                 .sub,
-//                 .mul,
-//                 .div,
-//                 .int_div,
-//                 .modulo,
-//                 .exponent,
-//                 => true,
-//                 else => false,
-//             };
-//         }
-//
-//         pub fn precedence(tag: Tag) u8 {
-//             return switch (tag) {
-//                 .logic_or => 1,
-//                 .logic_and => 2,
-//                 .equal,
-//                 .not_equal,
-//                 .less_than,
-//                 .greater_than,
-//                 .less_or_equal,
-//                 .greater_or_equal,
-//                 => 3,
-//                 .bit_or => 4,
-//                 .bit_and => 5,
-//                 .bit_shift_left, .bit_shift_right => 6,
-//                 .str_concat => 7,
-//                 .add, .sub => 8,
-//                 .mul, .div, .int_div, .modulo => 9,
-//                 .length, .negate, .bit_not, .logic_not => 10,
-//                 .exponent => 11,
-//                 .identifier,
-//                 .literal_int,
-//                 .literal_float,
-//                 .literal_string,
-//                 .literal_nil,
-//                 .literal_true,
-//                 .literal_false,
-//                 => 0,
-//             };
-//         }
-//
-//         fn tagCast(tag: Token.Tag) Node.Tag {
-//             return switch (tag) {
-//                 .identifier => .identifier,
-//                 .literal_number => .literal_int, // FIXME: floats
-//                 .literal_string => .literal_string,
-//                 .@"+" => .add,
-//                 .@"-" => .sub, // FIXME: what about .nagate
-//                 .@"*" => .mul,
-//                 .@"/" => .div,
-//                 .@"%" => .modulo,
-//                 .@"^" => .exponent,
-//                 .@"#" => .length,
-//                 .@"&" => .bit_and,
-//                 .@"~" => .bit_not,
-//                 .@"|" => .bit_or,
-//                 .@"<<" => .bit_shift_left,
-//                 .@">>" => .bit_shift_right,
-//                 .@"//" => .int_div,
-//                 .@"==" => .equal,
-//                 .@"!=" => .not_equal,
-//                 .@"<=" => .less_or_equal,
-//                 .@">=" => .greater_or_equal,
-//                 .@"<" => .less_than,
-//                 .@">" => .greater_than,
-//                 .@".." => .str_concat,
-//                 .@"(",
-//                 .@")",
-//                 .@",",
-//                 .@".",
-//                 .@"...",
-//                 .@":",
-//                 .@"::",
-//                 .@";",
-//                 .@"=",
-//                 .@"[",
-//                 .@"]",
-//                 .@"{",
-//                 .@"}",
-//                 .comment,
-//                 .eof,
-//                 .invalid,
-//                 .keyword_break,
-//                 .keyword_do,
-//                 .keyword_else,
-//                 .keyword_elseif,
-//                 .keyword_end,
-//                 .keyword_for,
-//                 .keyword_function,
-//                 .keyword_goto,
-//                 .keyword_if,
-//                 .keyword_in,
-//                 .keyword_local,
-//                 .keyword_repeat,
-//                 .keyword_return,
-//                 .keyword_then,
-//                 .keyword_until,
-//                 .keyword_while,
-//                 => unreachable, // TODO
-//             };
-//         }
-//     };
-// };
+const ast = @import("ast.zig");
 
 pub const Parser = struct {
-    lexer: Lexer,
-    curr_token: Token,
-    next_token: Token,
+    lexer: lx.Lexer,
+    curr_token: lx.Token,
+    next_token: lx.Token,
 
     // PERF: the messages and nodes shouldn't be interleaved by using the same allocator
     alloc: std.mem.Allocator,
@@ -326,12 +73,12 @@ pub const Parser = struct {
     messages: std.ArrayListUnmanaged(Message) = .empty,
 
     const Message = struct {
-        loc: Token.Loc,
+        loc: lx.Token.Loc,
         text: []const u8,
         level: enum { note, warninig, @"error" },
     };
 
-    pub fn init(lexer: Lexer) Parser {
+    pub fn init(lexer: lx.Lexer) Parser {
         var self = Parser{
             .lexer = lexer,
             .curr_token = undefined,
@@ -350,6 +97,10 @@ pub const Parser = struct {
         }
     }
 
+    fn expect(tag: lx.Token.Tag) void {
+        // TODO
+    }
+
     // TODO: use a scratch allocator
     fn parseStatement(self: *Parser) ?ast.NodeID {
         switch (self.curr_token) {
@@ -359,6 +110,19 @@ pub const Parser = struct {
             },
             .@"(", .identifier => {
                 // var, funccall
+                // table[func()]()[] = 100
+
+                // prefixexp ::= (Name | ‘(’ exp ‘)’) [ ‘[’ exp ‘]’ | ‘.’ Name | [‘:’ Name] arglist]
+                // arglist ::= ‘(’ [exp {, exp}] ‘)’ | tableconstructor | LiteralString
+
+                if (self.curr_token.tag == .identifier) {
+                    const name = self.parseName();
+                    const node = self.makeNode(.identifier, name);
+                } else {
+                    self.getToken();
+                    const exp = self.expectExp();
+                    self.expect(.@")");
+                }
             },
             .@"::" => {
                 self.getToken();
@@ -564,71 +328,121 @@ pub const Parser = struct {
                     });
                 }
             },
-            else => return null,
+            else => if (self.parseExp()) |exp| {
+                // var, funccall
+
+                // var {‘,’ var} ‘=’ explist
+                // var ::=  Name | prefixexp ‘[’ exp ‘]’ | prefixexp ‘.’ Name
+                // prefixexp ::= exp | exp [‘:’ Name] arglist
+
+            },
         }
+        return null;
     }
 
     // TODO: fix token advancing in parsing
-    fn parseExpression(self: *Parser, precedence: u8) !Index {
-        var node = try self.parsePrefixExp();
-        while (precedence < tagCast(self.next_token.tag).precedence()) {
-            node = try self.parseInfixExp(node);
-            self.getToken();
+    // FIXME: All 3 functions
+    fn parseExp(self: *Parser, precedence: u8) ?ast.NodeID {
+        if (self.parsePrefixExp()) |exp| {
+            var node = exp;
+            while (precedence < self.next_token.tag.precedence(false)) {
+                node = self.parseInfixExp(node);
+                self.getToken();
+            }
+            return node;
         }
-        return node;
+        return null;
     }
 
-    fn parsePrefixExp(self: *Parser) !Index {
-        std.debug.assert(tagCast(self.curr_token.tag).isUnaryOp());
-        defer self.getToken();
+    fn parsePrefixExp(self: *Parser) ?ast.NodeID {
+        // prefixexp ::= (Name | ‘(’ exp ‘)’) [ ‘.’ Name | ‘[’ exp ‘]’ | [‘:’ Name] arglist]
+        // arglist ::= ‘(’ [exp {, exp}] ‘)’ | tableconstructor | LiteralString
 
         switch (self.curr_token.tag) {
-            .identifier, .keyword_nil, .keyword_true, .keyword_false, .@"..." => {
+            .identifier => {
+                // parsePrefixExpHelper();
+                const lhs = self.parseName();
+
+                if (self.match(.@".")) {
+                    const rhs = self.expectName();
+                    return self.makeNode(.member_access, .{ .lhs = lhs, .rhs = rhs });
+                }
+                if (self.match(.@"[")) {
+                    const rhs = self.parseExp(0);
+                    self.expect(.@"]");
+                    return self.makeNode(.subscript, .{ .lhs = lhs, .rhs = rhs });
+                }
+
+                var func: ?ast.NodeID = null;
+                if (self.match(.@":")) {
+                    func = self.expectName();
+                }
+
+                if (self.match(.@"(")) {
+                    if (self.parseExp()) |exp| {
+                        try explist.append(self.alloc, exp);
+                        while (self.match(.@",")) {
+                            self.expectExp();
+                            try explist.append(self.alloc, self.expectExp());
+                        }
+                    }
+                    self.expect(.@")");
+                }
+                if (self.match(.@"{")) {
+                    // TODO:
+                    self.expect(.@"}");
+                }
+            },
+            .keyword_nil, .keyword_true, .keyword_false, .@"..." => {
+                self.getToken();
                 return self.makeNode(self.curr_token);
             },
             .@"(" => {
-                const node = try self.parseExpression(0);
+                self.getToken();
+                const node = self.expectExp();
                 self.expectTok(.@")");
                 return node;
             },
             .keyword_not, .@"~", .@"-", .@"#" => {
-                const node = try self.makeNode(self.curr_token);
-                const precedence = Key.Tag.negate.precedence();
+                const node = self.makeNode(self.curr_token);
+                const precedence = self.curr_token.tag.precedence(true);
                 self.getToken();
-                const value = try self.parseExpression(precedence);
+                const value = self.parseExp(precedence) orelse @panic("expected expression");
                 self.getValue(node).prefix_exp = value;
+                self.getToken();
                 return node;
             },
             .literal_number => {
-                const node = try self.makeNode(self.curr_token);
+                const node = self.makeNode(self.curr_token);
                 const lexeme = self.getLexeme(self.curr_token);
                 const value = std.fmt.parseInt(i64, lexeme, 10) catch blk: {
                     self.err("could not parse {s} as integer", .{lexeme});
                     break :blk 0;
                 };
                 self.getValue(node).literal_int = value;
+                self.getToken();
                 return node;
             },
             .literal_string => {
-                const node = try self.makeNode(self.curr_token);
+                const node = self.makeNode(self.curr_token);
                 const lexeme = self.getLexeme(self.curr_token);
                 // TODO: Encode the string, place it in static storage section of arena allocator
                 const value = lexeme;
                 self.getValue(node).literal_int = value;
+                self.getToken();
                 return node;
             },
-            else => unreachable,
+            else => return null,
         }
     }
 
-    fn parseInfixExp(self: *Parser, lhs: Index) !Index {
-        std.debug.assert(tagCast(self.curr_token.tag).isBinaryOp());
-
-        const node = try self.makeNode(self.curr_token);
-        const precedence = tagCast(self.curr_token.tag).precedence();
+    fn parseInfixExp(self: *Parser, lhs: ast.NodeID) ast.NodeID {
+        const node = self.makeNode(self.curr_token) catch @panic("OOM");
+        const precedence = self.curr_token.tag.precedence(false);
         self.getToken();
 
-        const rhs = try self.parseExpression(precedence);
+        const rhs = self.parseExp(precedence) orelse @panic("expected expression");
+        // FIXME: change this to the Key api
         self.getValue(node).infix_exp.lhs = lhs;
         self.getValue(node).infix_exp.rhs = rhs;
         self.getToken();
@@ -647,15 +461,15 @@ pub const Parser = struct {
         return self.nodes.toOwnedSlice(alloc);
     }
 
-    fn getValue(self: Parser, node: Index) *Key.ValueUnion {
+    fn getValue(self: Parser, node: ast.NodeID) *Key.ValueUnion {
         return &self.nodes.items[node].value;
     }
 
-    fn getLexeme(self: Parser, token: Token) []const u8 {
+    fn getLexeme(self: Parser, token: lx.Token) []const u8 {
         return self.lexer.buffer[token.loc.start..token.loc.end];
     }
 
-    fn makeNode(self: *Parser, token: Token) std.mem.Allocator.Error!Index {
+    fn makeNode(self: *Parser, token: lx.Token) std.mem.Allocator.Error!ast.NodeID {
         const node_idx = self.nodes.items.len;
         try self.nodes.append(
             self.alloc,
@@ -664,7 +478,7 @@ pub const Parser = struct {
         return node_idx;
     }
 
-    fn match(self: *Parser, tag: Token.Tag) bool {
+    fn match(self: *Parser, tag: lx.Token.Tag) bool {
         if (self.curr_token.tag == tag) {
             self.getToken();
             return true;
@@ -672,7 +486,7 @@ pub const Parser = struct {
         return false;
     }
 
-    fn expectTok(self: *Parser, tag: Token.Tag) void {
+    fn expectTok(self: *Parser, tag: lx.Token.Tag) void {
         if (self.next_token.tag == tag) {
             self.getToken();
         } else {
