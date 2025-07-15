@@ -1,6 +1,9 @@
 const std = @import("std");
 
-pub const NodeID = enum(u32) { _ };
+pub const NodeID = enum(u32) {
+    none = 0xffff_ffff,
+    _,
+};
 
 pub const Node = struct {
     tag: Tag,
@@ -129,28 +132,6 @@ pub const Key = union(enum) {
         vars: []const NodeID,
         values: []const NodeID,
     },
-};
-
-const Decoder = struct {
-    idx: u32,
-    buffer: []const u32,
-
-    fn init(buffer: []const u32, start_idx: u32) Decoder {
-        return Decoder{ .idx = start_idx, .buffer = buffer };
-    }
-
-    fn decode(self: *Decoder, comptime T: type, count: u32) []const T {
-        std.debug.assert(@alignOf(T) <= @alignOf(u32));
-
-        const len = count * @sizeOf(T) / @sizeOf(u32);
-        defer self.idx += len;
-        return @ptrCast(@alignCast(self.buffer[self.idx .. self.idx + len]));
-    }
-
-    fn decodeOne(self: *Decoder) u32 {
-        defer self.idx += 1;
-        return @ptrCast(@alignCast(self.buffer[self.idx .. self.idx + 1]));
-    }
 };
 
 pub fn encodeKey(
@@ -317,6 +298,28 @@ pub fn encodeKey(
     return @intCast(nodes.items.len - 1);
 }
 
+const Decoder = struct {
+    idx: u32,
+    buffer: []const u32,
+
+    fn init(buffer: []const u32, start_idx: u32) Decoder {
+        return Decoder{ .idx = start_idx, .buffer = buffer };
+    }
+
+    fn decode(self: *Decoder, comptime T: type, count: u32) []const T {
+        std.debug.assert(@alignOf(T) <= @alignOf(u32));
+
+        const len = count * @sizeOf(T) / @sizeOf(u32);
+        defer self.idx += len;
+        return @ptrCast(@alignCast(self.buffer[self.idx .. self.idx + len]));
+    }
+
+    fn decodeOne(self: *Decoder) u32 {
+        defer self.idx += 1;
+        return @ptrCast(@alignCast(self.buffer[self.idx .. self.idx + 1]));
+    }
+};
+
 pub fn decodeKey(
     nodes: []const Node,
     extra: []const u32,
@@ -438,4 +441,8 @@ pub fn decodeKey(
         .func_call => {},
         .asignment => {},
     }
+}
+
+test "semantic analyses" {
+    std.testing.refAllDecls(@This());
 }

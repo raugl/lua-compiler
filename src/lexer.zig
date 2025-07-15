@@ -498,7 +498,7 @@ pub const Lexer = struct {
                     else => continue :state .int,
                 }
             },
-            .int_perido => {
+            .int_period => {
                 self.index += 1;
                 switch (self.buffer[self.index]) {
                     '_', 'a'...'d', 'f'...'o', 'q'...'z', 'A'...'D', 'F'...'O', 'Q'...'Z', '0'...'9' => {
@@ -719,4 +719,8 @@ fn testTokenize(source: [:0]const u8, expected_tags: []const Token.Tag) !void {
     try std.testing.expectEqual(Token.Tag.eof, last_token.tag);
     try std.testing.expectEqual(source.len, last_token.loc.start);
     try std.testing.expectEqual(source.len, last_token.loc.end);
+}
+
+test "semantic analyses" {
+    std.testing.refAllDecls(@This());
 }

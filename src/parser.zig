@@ -56,8 +56,11 @@
 // unop ::= ‘-’ | ‘not’ | ‘#’ | ‘~’
 
 const std = @import("std");
-const lx = @import("lexer.zig");
 const ast = @import("ast.zig");
+const lx = @import("lexer.zig");
+
+const meta = std.meta;
+const mem = std.mem;
 
 pub const Parser = struct {
     lexer: lx.Lexer,
@@ -65,8 +68,8 @@ pub const Parser = struct {
     next_token: lx.Token,
 
     // PERF: the messages and nodes shouldn't be interleaved by using the same allocator
-    alloc: std.mem.Allocator,
-    scratch: std.mem.Allocator,
+    alloc: mem.Allocator,
+    scratch: mem.Allocator,
 
     extra: std.ArrayListUnmanaged(u32) = .empty,
     nodes: std.ArrayListUnmanaged(ast.Node) = .empty,
@@ -78,9 +81,11 @@ pub const Parser = struct {
         level: enum { note, warninig, @"error" },
     };
 
-    pub fn init(lexer: lx.Lexer) Parser {
+    pub fn init(lexer: lx.Lexer, alloc: mem.Allocator, scratch: mem.Allocator) Parser {
         var self = Parser{
             .lexer = lexer,
+            .alloc = alloc,
+            .scratch = scratch,
             .curr_token = undefined,
             .next_token = undefined,
         };
@@ -97,32 +102,292 @@ pub const Parser = struct {
         }
     }
 
-    fn expect(tag: lx.Token.Tag) void {
-        // TODO
+    fn getLexeme(self: Parser, token: lx.Token) []const u8 {
+        return self.lexer.buffer[token.loc.start..token.loc.end];
     }
 
-    // TODO: use a scratch allocator
-    fn parseStatement(self: *Parser) ?ast.NodeID {
-        switch (self.curr_token) {
+    // TODO:
+    fn makeNode(
+        self: *Parser,
+        comptime tag: meta.Tag(ast.Key),
+        data: meta.TagPayload(ast.Key, tag),
+    ) mem.Allocator.Error!ast.NodeID {
+        _ = .{ self, tag, data };
+
+        const node_idx = self.nodes.items.len;
+        try self.nodes.append(self.alloc, unreachable); // TODO
+        return node_idx;
+    }
+
+    // TODO:
+    fn err(self: *Parser, comptime fmt: []const u8, args: anytype) void {
+        _ = self;
+        std.log.err(fmt, args);
+    }
+
+    fn match(self: *Parser, tag: lx.Token.Tag) bool {
+        if (self.curr_token.tag == tag) {
+            self.getToken();
+            return true;
+        }
+        return false;
+    }
+
+    fn expect(self: *Parser, tag: lx.Token.Tag) void {
+        if (self.next_token.tag == tag) {
+            self.getToken();
+        } else {
+            // FIXME: this way char token won't be wrapped in quotes
+            self.err("expected {s}, found {s}", .{
+                tag.lexeme(),
+                self.getLexeme(self.curr_token),
+            });
+        }
+    }
+
+    // TODO:
+    pub fn parse() void {}
+
+    // TODO:
+    fn parseBlock() void {}
+
+    // TODO: fix token advancing in parsing
+    fn parseExp(self: *Parser, precedence: u8) !?ast.NodeID {
+        if (try self.parseUnaryExp()) |lhs| {
+            var node = lhs;
+            while (precedence < self.next_token.tag.precedence(false)) {
+                node = try self.parseBinaryExp(node);
+                self.getToken();
+            }
+            return node;
+        }
+        return null;
+    }
+
+    fn expectExp(self: *Parser, precedence: u8) !ast.NodeID {
+        return self.parseExp(precedence) orelse {
+            const found = self.getLexeme(self.curr_token);
+            self.err("expected expression, found {s}", .{found});
+            return .none;
+        };
+    }
+
+    // TODO: parse anonymus functions
+    fn parseUnaryExp(self: *Parser) !?ast.NodeID {
+        switch (self.curr_token.tag) {
+            .identifier => {
+                return self.makeNode(.identifier, self.parseName());
+            },
+            .@"(" => {
+                self.getToken();
+                const node = try self.expectExp(0);
+                self.expect(.@")");
+                return node;
+            },
+            .keyword_not, .@"~", .@"-", .@"#" => {
+                const op = switch (self.curr_token.tag) {
+                    .@"#" => .length,
+                    .@"-" => .negate,
+                    .@"~" => .bitwise_not,
+                    .keyword_not => .logic_not,
+                };
+                const prec = self.curr_token.tag.precedence(true);
+                self.getToken();
+
+                return self.makeNode(.unary_op, .{
+                    .op = op,
+                    .exp = try self.expectExp(prec),
+                });
+            },
+            .keyword_nil => {
+                self.getToken();
+                return self.makeNode(.literal_nil, .{});
+            },
+            .keyword_true => {
+                self.getToken();
+                return self.makeNode(.literal_true, .{});
+            },
+            .keyword_false => {
+                self.getToken();
+                return self.makeNode(.literal_false, .{});
+            },
+            .@"..." => {
+                self.getToken();
+                return self.makeNode(.literal_ellipsis, .{});
+            },
+            .literal_number => {
+                const lexeme = self.getLexeme(self.curr_token);
+                const value = std.fmt.parseInt(i64, lexeme, 10) catch blk: {
+                    self.err("could not parse {s} as integer", .{lexeme});
+                    break :blk 0;
+                };
+                self.getToken();
+                return self.makeNode(.literal_number, value);
+            },
+            .literal_string => {
+                const lexeme = self.getLexeme(self.curr_token);
+                // TODO: Encode the string, place it in static storage section of arena allocator
+                const value = lexeme;
+                self.getToken();
+                return self.makeNode(.literal_string, value);
+            },
+            else => return null,
+        }
+    }
+
+    fn parseBinaryExp(self: *Parser, lhs: ast.NodeID) !ast.NodeID {
+        const op = switch (self.curr_token.tag) {
+            .keyword_or => .logic_or,
+            .keyword_and => .logic_and,
+            .@"=" => .equal,
+            .@"~=" => .not_equal,
+            .@"<" => .less,
+            .@">" => .greater,
+            .@"<=" => .less_equal,
+            .@">=" => .greater_equal,
+            .@"|" => .bitwise_or,
+            .@"&" => .bitwise_and,
+            .@"<<" => .l_bit_shift,
+            .@">>" => .r_bit_shift,
+            .@".." => .str_concat,
+            .@"+" => .add,
+            .@"-" => .sub,
+            .@"*" => .mul,
+            .@"/" => .div,
+            .@"//" => .int_div,
+            .@"%" => .modulo,
+            .@"^" => .exponent,
+            .@"." => .member_access,
+            .@"[" => .subscript,
+            .@":", .@"(", .@"{", .@"'", .@"\"" => .func_call,
+        };
+        const prec = self.curr_token.tag.precedence(true);
+
+        if (op == .func_call) {
+            var member: ?ast.NodeID = null;
+            if (self.match(.@":")) {
+                member = self.expectName();
+            }
+
+            var should_free = false;
+            const args = blk: {
+                if (try self.parseTableConstructor()) |args| {
+                    break :blk args;
+                } else if (try self.parseArgList()) |args| {
+                    should_free = true;
+                    break :blk args;
+                } else {
+                    // FIXME: both of these 2 consume the token
+                    self.expect(.literal_string);
+                    break :blk self.parseString();
+                }
+            };
+            defer if (should_free) self.scratch.free(args);
+
+            return self.makeNode(.func_call, .{
+                .object = lhs,
+                .member = member,
+                .args = args,
+            });
+        }
+
+        self.getToken();
+        const rhs = try self.expectExp(prec);
+        if (op == .subscript) self.expect(.@"]");
+        return self.makeNode(.binary_op, .{ .op = op, .lhs = lhs, .rhs = rhs });
+    }
+
+    fn parseArgList(self: *Parser) !?[]const ast.NodeID {
+        // arglist ::= ‘(’ [exp {, exp}] ‘)’
+
+        if (self.match(.@"(")) {
+            var args = std.ArrayList(ast.NodeID).init(self.scratch);
+            defer args.deinit();
+
+            if (try self.parseExp(0)) |exp_| {
+                try args.append(self.scratch, exp_);
+
+                while (self.match(.@",")) {
+                    const exp = try self.expectExp(0);
+                    try args.append(self.scratch, exp);
+                }
+            }
+            self.expect(.@")");
+            return args.toOwnedSlice();
+        }
+        return null;
+    }
+
+    fn parseTableConstructor(self: *Parser) !?ast.NodeID {
+        // tableconstructor ::= ‘{’ [field {fieldsep field} [fieldsep]] ‘}’
+        // fieldsep ::= ‘,’ | ‘;’
+
+        if (self.match(.@"{")) {
+            var fields = std.ArrayList(Field).init(self.scratch);
+            defer fields.deinit();
+
+            if (try self.parseField()) |field_| {
+                try fields.append(field_);
+
+                while (self.match(.@",") or self.match(.@";")) {
+                    const field = try parseField() orelse break;
+                    try fields.append(field);
+                }
+            }
+            self.expect(.@"}");
+            return self.makeNode(.table_constructor, .{
+                .fields = fields.items,
+            });
+        }
+        return null;
+    }
+
+    const Field = struct {
+        key: ?ast.NodeID = null,
+        value: ast.NodeID,
+    };
+
+    fn parseField(self: *Parser) !?Field {
+        // field ::= ‘[’ exp ‘]’ ‘=’ exp | Name ‘=’ exp | exp
+
+        if (self.match(.@"[")) {
+            const key = try self.expectExp(0);
+            self.expect(.@"]");
+            self.expect(.@"=");
+            return Field{
+                .key = key,
+                .value = try self.expectExp(0),
+            };
+        }
+        if (self.match(.identifier)) {
+            const key = self.expectName();
+            self.expect(.@"=");
+            return Field{
+                .key = key,
+                .value = try self.expectExp(0),
+            };
+        }
+        if (try self.parseExp(0)) |exp| {
+            return Field{ .value = exp };
+        }
+        return null;
+    }
+
+    const File = struct {
+        file: std.fs.File,
+        ptr: []align(std.heap.page_size_min) u8,
+
+        pub fn deinit(self: @This()) void {
+            std.posix.munmap(self.ptr);
+            self.file.close();
+        }
+    };
+
+    pub fn parseStatement(self: *Parser) !?ast.NodeID {
+        switch (self.curr_token.tag) {
             .@";" => {
                 self.getToken();
                 return self.parseStatement();
-            },
-            .@"(", .identifier => {
-                // var, funccall
-                // table[func()]()[] = 100
-
-                // prefixexp ::= (Name | ‘(’ exp ‘)’) [ ‘[’ exp ‘]’ | ‘.’ Name | [‘:’ Name] arglist]
-                // arglist ::= ‘(’ [exp {, exp}] ‘)’ | tableconstructor | LiteralString
-
-                if (self.curr_token.tag == .identifier) {
-                    const name = self.parseName();
-                    const node = self.makeNode(.identifier, name);
-                } else {
-                    self.getToken();
-                    const exp = self.expectExp();
-                    self.expect(.@")");
-                }
             },
             .@"::" => {
                 self.getToken();
@@ -147,7 +412,7 @@ pub const Parser = struct {
             },
             .keyword_while => {
                 self.getToken();
-                const cond = self.expectExp();
+                const cond = try self.expectExp(0);
                 self.expect(.keyword_do);
                 const block = self.expectBlock();
                 self.expect(.keyword_end);
@@ -160,7 +425,7 @@ pub const Parser = struct {
                 self.getToken();
                 const block = self.expectBlock();
                 self.expect(.keyword_until);
-                const cond = self.expectExp();
+                const cond = try self.expectExp(0);
                 self.expect(.keyword_end);
                 return self.makeNode(.repeat, .{
                     .cond = cond,
@@ -168,12 +433,12 @@ pub const Parser = struct {
                 });
             },
             .keyword_if => {
-                var branches = std.ArrayList(ast.Conditional).init(self.alloc);
+                var branches = std.ArrayList(ast.Conditional).init(self.scratch);
                 defer branches.deinit();
                 self.getToken();
 
                 while (true) {
-                    const branch = branches.addOne() catch @panic("OOM");
+                    const branch = try branches.addOne();
                     branch.cond = self.expectExpression();
                     self.expect(.keyword_then);
                     branch.block = self.expectBlock();
@@ -199,12 +464,12 @@ pub const Parser = struct {
                 const name = self.expectName();
 
                 if (self.match(.@"=")) {
-                    const start = self.expectExp();
+                    const start = try self.expectExp(0);
                     self.expect(.@",");
-                    const end = self.expectExp();
+                    const end = try self.expectExp(0);
 
                     if (self.match(.@",")) {
-                        const step = self.expectExp();
+                        const step = try self.expectExp(0);
                         self.expect(.keyword_do);
                         const block = self.expectBlock();
                         self.expect(.keyword_end);
@@ -227,20 +492,20 @@ pub const Parser = struct {
                         .block = block,
                     });
                 } else {
-                    var names = std.ArrayList(ast.Slice).init(self.alloc);
+                    var names = std.ArrayList(ast.Slice).init(self.scratch);
                     defer names.deinit();
-                    var values = std.ArrayList(ast.NodeID).init(self.alloc);
+                    var values = std.ArrayList(ast.NodeID).init(self.scratch);
                     defer values.deinit();
 
-                    names.append(name) catch @panic("OOM");
+                    try names.append(name);
                     while (self.match(.@",")) {
                         const other_name = self.expectName();
-                        names.append(other_name) catch @panic("OOM");
+                        try names.append(other_name);
                     }
                     self.expect(.keyword_in);
 
                     while (true) {
-                        values.append(self.expectExp()) catch @panic("OOM");
+                        try values.append(try self.expectExp(0));
                         if (!self.match(.@",")) break;
                     }
                     self.expect(.keyword_do);
@@ -255,9 +520,9 @@ pub const Parser = struct {
                 }
             },
             .keyword_function => {
-                var names = std.ArrayList(ast.Slice).init(self.alloc);
+                var names = std.ArrayList(ast.Slice).init(self.scratch);
                 defer names.deinit();
-                var params = std.ArrayList(ast.Slice).init(self.alloc);
+                var params = std.ArrayList(ast.Slice).init(self.scratch);
                 defer params.definit();
 
                 var is_member = false;
@@ -266,12 +531,12 @@ pub const Parser = struct {
                 self.getToken();
                 while (true) {
                     const name = self.expectName();
-                    names.append(name) catch @panic("OOM");
-                    if (!self.match(.@",")) break;
+                    try names.append(name);
+                    if (!self.match(.@".")) break;
                 }
                 if (self.match(.@":")) {
                     const name = self.expectName();
-                    names.append(name) catch @panic("OOM");
+                    try names.append(name);
                     is_member = true;
                 }
 
@@ -282,7 +547,7 @@ pub const Parser = struct {
                         break;
                     }
                     const name = self.expectName();
-                    params.append(name) catch @panic("OOM");
+                    try params.append(name);
                     if (!self.match(.@",")) break;
                 }
                 self.expect(.@")");
@@ -306,14 +571,14 @@ pub const Parser = struct {
                         .body = body,
                     });
                 } else {
-                    var names = std.ArrayList(ast.Slice).init(self.alloc);
+                    var names = std.ArrayList(ast.Slice).init(self.scratch);
                     defer names.deinit();
 
-                    names.append(self.expectName()) catch @panic("OOM");
+                    try names.append(self.expectName());
                     _ = self.parseAttrib() orelse {}; // NOTE: Discarding attributes
 
                     while (self.match(.@",")) {
-                        names.append(self.expectName()) catch @panic("OOM");
+                        try names.append(self.expectName());
                         _ = self.parseAttrib() orelse {}; // NOTE: Discarding attributes
                     }
                     if (self.match(.@"=")) {
@@ -328,405 +593,147 @@ pub const Parser = struct {
                     });
                 }
             },
-            else => if (self.parseExp()) |exp| {
-                // var, funccall
-
-                // var {‘,’ var} ‘=’ explist
-                // var ::=  Name | prefixexp ‘[’ exp ‘]’ | prefixexp ‘.’ Name
-                // prefixexp ::= exp | exp [‘:’ Name] arglist
-
-            },
-        }
-        return null;
-    }
-
-    // TODO: fix token advancing in parsing
-    // FIXME: All 3 functions
-    fn parseExp(self: *Parser, precedence: u8) ?ast.NodeID {
-        if (self.parsePrefixExp()) |exp| {
-            var node = exp;
-            while (precedence < self.next_token.tag.precedence(false)) {
-                node = self.parseInfixExp(node);
-                self.getToken();
-            }
-            return node;
-        }
-        return null;
-    }
-
-    fn parsePrefixExp(self: *Parser) ?ast.NodeID {
-        // prefixexp ::= (Name | ‘(’ exp ‘)’) [ ‘.’ Name | ‘[’ exp ‘]’ | [‘:’ Name] arglist]
-        // arglist ::= ‘(’ [exp {, exp}] ‘)’ | tableconstructor | LiteralString
-
-        switch (self.curr_token.tag) {
-            .identifier => {
-                // parsePrefixExpHelper();
-                const lhs = self.parseName();
-
-                if (self.match(.@".")) {
-                    const rhs = self.expectName();
-                    return self.makeNode(.member_access, .{ .lhs = lhs, .rhs = rhs });
-                }
-                if (self.match(.@"[")) {
-                    const rhs = self.parseExp(0);
-                    self.expect(.@"]");
-                    return self.makeNode(.subscript, .{ .lhs = lhs, .rhs = rhs });
-                }
-
-                var func: ?ast.NodeID = null;
-                if (self.match(.@":")) {
-                    func = self.expectName();
-                }
-
-                if (self.match(.@"(")) {
-                    if (self.parseExp()) |exp| {
-                        try explist.append(self.alloc, exp);
-                        while (self.match(.@",")) {
-                            self.expectExp();
-                            try explist.append(self.alloc, self.expectExp());
-                        }
-                    }
-                    self.expect(.@")");
-                }
-                if (self.match(.@"{")) {
-                    // TODO:
-                    self.expect(.@"}");
-                }
-            },
-            .keyword_nil, .keyword_true, .keyword_false, .@"..." => {
-                self.getToken();
-                return self.makeNode(self.curr_token);
-            },
-            .@"(" => {
-                self.getToken();
-                const node = self.expectExp();
-                self.expectTok(.@")");
-                return node;
-            },
-            .keyword_not, .@"~", .@"-", .@"#" => {
-                const node = self.makeNode(self.curr_token);
-                const precedence = self.curr_token.tag.precedence(true);
-                self.getToken();
-                const value = self.parseExp(precedence) orelse @panic("expected expression");
-                self.getValue(node).prefix_exp = value;
-                self.getToken();
-                return node;
-            },
-            .literal_number => {
-                const node = self.makeNode(self.curr_token);
-                const lexeme = self.getLexeme(self.curr_token);
-                const value = std.fmt.parseInt(i64, lexeme, 10) catch blk: {
-                    self.err("could not parse {s} as integer", .{lexeme});
-                    break :blk 0;
-                };
-                self.getValue(node).literal_int = value;
-                self.getToken();
-                return node;
-            },
-            .literal_string => {
-                const node = self.makeNode(self.curr_token);
-                const lexeme = self.getLexeme(self.curr_token);
-                // TODO: Encode the string, place it in static storage section of arena allocator
-                const value = lexeme;
-                self.getValue(node).literal_int = value;
-                self.getToken();
-                return node;
-            },
             else => return null,
         }
     }
 
-    fn parseInfixExp(self: *Parser, lhs: ast.NodeID) ast.NodeID {
-        const node = self.makeNode(self.curr_token) catch @panic("OOM");
-        const precedence = self.curr_token.tag.precedence(false);
-        self.getToken();
-
-        const rhs = self.parseExp(precedence) orelse @panic("expected expression");
-        // FIXME: change this to the Key api
-        self.getValue(node).infix_exp.lhs = lhs;
-        self.getValue(node).infix_exp.rhs = rhs;
-        self.getToken();
-        return node;
-    }
-
     // ==== TODO: ==================================================================================
 
-    pub fn parse(self: *Parser, alloc: std.mem.Allocator) ![]const Key {
-        // TODO: parsing
-
-        // TODO: flush messages
-        // NOTE: the message queue may need to be encoded as a some sort of
-        // tree so that it can be sorted while preserving the order of context
-        // messages
-        return self.nodes.toOwnedSlice(alloc);
-    }
-
-    fn getValue(self: Parser, node: ast.NodeID) *Key.ValueUnion {
-        return &self.nodes.items[node].value;
-    }
-
-    fn getLexeme(self: Parser, token: lx.Token) []const u8 {
-        return self.lexer.buffer[token.loc.start..token.loc.end];
-    }
-
-    fn makeNode(self: *Parser, token: lx.Token) std.mem.Allocator.Error!ast.NodeID {
-        const node_idx = self.nodes.items.len;
-        try self.nodes.append(
-            self.alloc,
-            Key{ .token = token, .tag = tagCast(token.tag), .value = undefined },
-        );
-        return node_idx;
-    }
-
-    fn match(self: *Parser, tag: lx.Token.Tag) bool {
-        if (self.curr_token.tag == tag) {
-            self.getToken();
-            return true;
-        }
-        return false;
-    }
-
-    fn expectTok(self: *Parser, tag: lx.Token.Tag) void {
-        if (self.next_token.tag == tag) {
-            self.getToken();
-        } else {
-            // FIXME: this way char token won't be wrapped in quotes
-            self.err("expected {s}, found {s}", .{ tag.lexeme(), self.getLexeme(self.curr_token) });
-        }
-    }
-
-    fn expect(self: *Parser, ok: bool, comptime lexeme: []const u8) void {
-        if (!ok) {
-            // FIXME: this way char token won't be wrapped in quotes
-            self.err("expected {s}, found {s}", .{ lexeme, self.getLexeme(self.curr_token) });
-        }
-    }
-
-    fn parseBlock(self: *Parser) bool {
-        while (self.matchStatement()) {}
-        if (self.match(.keyword_return)) {
-            if (self.matchExpList()) {}
-            if (self.match(.semicolon)) {}
-        }
-        return true;
-    }
-
-    // FIXME: What happens in an expect fails???
-    fn matchStatement(self: *Parser) bool {
-        if (self.match(.@";") or self.matchFuncCall() or self.match(.keyword_break)) {
-            return true;
-        }
-        if (self.matchVar()) {
-            while (self.match(.@",")) {
-                self.expect(self.matchVar(), "<name>");
-            }
-            self.expectTok(.@"=");
-            self.expect(self.matchExpList(), "expression");
-            return true;
-        }
-        if (self.match(.@"::")) {
-            self.expectTok(.identifier);
-            self.expectTok(.@"::");
-            return true;
-        }
-        if (self.match(.keyword_goto)) {
-            self.expectTok(.identifier);
-            return true;
-        }
-        if (self.match(.keyword_do)) {
-            self.expect(self.matchBlock(), "block");
-            self.expectTok(.keyword_end);
-            return true;
-        }
-        if (self.match(.keyword_while)) {
-            self.expect(self.matchExpression(), "expression");
-            self.expectTok(.keyword_do);
-            self.expect(self.matchBlock(), "block");
-            self.expectTok(.keyword_end);
-            return true;
-        }
-        if (self.match(.keyword_repeat)) {
-            self.expect(self.matchBlock(), "block");
-            self.expectTok(.keyword_until);
-            self.expect(self.matchExpression(), "expression");
-            return true;
-        }
-
-        if (self.match(.keyword_for)) {
-            self.expectTok(.identifier);
-            if (self.match(.@"=")) {
-                self.expect(self.matchExpression(), "expression");
-                self.expectTok(.@",");
-                self.expect(self.matchExpression(), "expression");
-
-                while (self.match(.@",")) {
-                    self.expect(self.matchExpression(), "expression");
-                }
-                self.expectTok(.keyword_do);
-                self.expect(self.matchBlock(), "block");
-                self.expectTok(.keyword_end);
-            } else {
-                while (self.match(.@",")) {
-                    self.expectTok(.identifier);
-                }
-                self.expectTok(.keyword_in);
-                self.expect(self.matchExpList(), "expression");
-                self.expectTok(.keyword_do);
-                self.expect(self.matchBlock(), "block");
-                self.expectTok(.keyword_end);
-            }
-            return true;
-        }
-        if (self.match(.keyword_function)) {
-            self.expectTok(.identifier);
-            while (self.match(.@".")) {
-                self.expectTok(.identifier);
-            }
-            if (self.match(.@":")) {
-                self.expectTok(.identifier);
-            }
-            self.expect(self.matchFuncBody(), "function body");
-            return true;
-        }
-        if (self.match(.keyword_local)) {
-            if (self.expectTok(.keyword_function)) {
-                self.expectTok(.identifier);
-                self.expect(self.matchFuncBody(), "function body");
-            } else {
-                self.expectTok(.identifier);
-                _ = self.matchAttribute();
-                while (self.match(.@",")) {
-                    self.expectTok(.identifier);
-                    _ = self.matchAttribute();
-                }
-                if (self.match(.@"=")) {
-                    self.expect(self.matchExpList(), "expression");
-                }
-            }
-            return true;
-        }
-        return false;
-    }
-
-    fn matchAttribute(self: *Parser) bool {
-        if (self.expectTok(.@"<")) {
-            self.expectTok(.identifier);
-            self.expectTok(.@">");
-        }
-        return true;
-    }
-
-    fn matchVar(self: *Parser) bool {
-        if (self.match(.identifier)) {
-            return true;
-        }
-        if (self.matchPrefixExp()) {
-            self.expectTok(.@"[");
-            self.expect(self.matchExpression(), "expression");
-            self.expectTok(.@"]");
-            return true;
-        }
-        if (self.matchPrefixExp()) {
-            self.expectTok(.@".");
-            self.expectTok(.identifier);
-        }
-        return true;
-    }
-
-    fn matchExpList(self: *Parser) bool {
-        if (self.matchExpression()) {
-            while (self.match(.@",")) {
-                self.expect(self.matchExpression(), "expression");
-            }
-            return true;
-        }
-        return false;
-    }
-
-    fn matchExp(self: *Parser) bool {}
-
-    fn matchFuncCall(self: *Parser) bool {
-        if (self.matchPrefixExp()) {
-            self.expect(self.matchArgList(), "arguments");
-            if (self.matchArgList()) {
-                return true;
-            } else {
-                self.expectTok(.@":");
-                self.expectTok(.identifier);
-                self.expect(self.matchArgList(), "arguments");
-                return true;
-            }
-        }
-        return false;
-    }
-
-    fn matchArgList(self: *Parser) bool {
-        if (self.match(.@"(")) {
-            if (self.matchExpList()) {}
-            self.expectTok(.@")");
-            return true;
-        }
-        return self.matchTableConstructor() or self.match(.literal_string);
-    }
-
-    fn matchFuncBody(self: *Parser) bool {
-        if (self.match(.@"(")) {
-            if (self.match(.identifier)) {
-                while (self.match(.@",")) {
-                    self.expectTok(.identifier);
-                }
-            }
-            self.expectTok(.@")");
-            self.expect(self.matchBlock(), "block");
-            self.expectTok(.keyword_end);
-            return true;
-        }
-        return false;
-    }
-
-    fn matchParamList(self: *Parser) bool {
-        if (self.match(.identifier)) {
-            while (self.match(.@",")) {
-                self.expectTok(.identifier);
-            }
-            if (self.match(.@",")) {
-                self.expectTok(.@"...");
-            }
-            return true;
-        }
-        return self.match(.@"...");
-    }
-
-    fn matchTableConstructor(self: *Parser) bool {
-        if (self.match(.@"{")) {
-            if (self.matchField()) {
-                while (self.matchFieldSep()) {
-                    self.expect(self.matchField(), "field");
-                }
-                if (self.matchFieldSep()) {}
-            }
-            self.expectTok(.@"}");
-            return true;
-        }
-        return false;
-    }
-
-    fn matchField(self: *Parser) bool {
-        if (self.match(.@"[")) {
-            self.expect(self.matchExpression(), "expression");
-            self.expectTok(.@"]");
-            self.expectTok(.@"=");
-            self.expect(self.matchExpression(), "expression");
-            return true;
-        }
-        if (self.match(.identifier)) {
-            self.expectTok(.@"=");
-            self.expect(self.matchExpression(), "expression");
-        }
-        return self.matchExpression();
-    }
-
-    fn matchFieldSep(self: *Parser) bool {
-        return self.match(.@",") or self.match(.@";");
-    }
+    // pub fn parse(self: *Parser, alloc: Allocator) ![]const Key {
+    //     // TODO: parsing
+    //
+    //     // TODO: flush messages
+    //     // NOTE: the message queue may need to be encoded as a some sort of
+    //     // tree so that it can be sorted while preserving the order of context
+    //     // messages
+    //     return self.nodes.toOwnedSlice(alloc);
+    // }
+    //
+    //
+    // fn parseBlock(self: *Parser) bool {
+    //     while (self.matchStatement()) {}
+    //     if (self.match(.keyword_return)) {
+    //         if (self.matchExpList()) {}
+    //         if (self.match(.semicolon)) {}
+    //     }
+    //     return true;
+    // }
+    //
+    // // FIXME: What happens in an expect fails???
+    // fn matchStatement(self: *Parser) bool {
+    //     if (self.match(.@";") or self.matchFuncCall() or self.match(.keyword_break)) {
+    //         return true;
+    //     }
+    //     if (self.matchVar()) {
+    //         while (self.match(.@",")) {
+    //             self.expect(self.matchVar(), "<name>");
+    //         }
+    //         self.expect(.@"=");
+    //         self.expect(self.matchExpList(), "expression");
+    //         return true;
+    //     }
+    //     if (self.match(.@"::")) {
+    //         self.expect(.identifier);
+    //         self.expect(.@"::");
+    //         return true;
+    //     }
+    //     if (self.match(.keyword_goto)) {
+    //         self.expect(.identifier);
+    //         return true;
+    //     }
+    //     if (self.match(.keyword_do)) {
+    //         self.expect(self.matchBlock(), "block");
+    //         self.expect(.keyword_end);
+    //         return true;
+    //     }
+    //     if (self.match(.keyword_while)) {
+    //         self.expect(self.matchExpression(), "expression");
+    //         self.expect(.keyword_do);
+    //         self.expect(self.matchBlock(), "block");
+    //         self.expect(.keyword_end);
+    //         return true;
+    //     }
+    //     if (self.match(.keyword_repeat)) {
+    //         self.expect(self.matchBlock(), "block");
+    //         self.expect(.keyword_until);
+    //         self.expect(self.matchExpression(), "expression");
+    //         return true;
+    //     }
+    //
+    //     if (self.match(.keyword_for)) {
+    //         self.expect(.identifier);
+    //         if (self.match(.@"=")) {
+    //             self.expect(self.matchExpression(), "expression");
+    //             self.expect(.@",");
+    //             self.expect(self.matchExpression(), "expression");
+    //
+    //             while (self.match(.@",")) {
+    //                 self.expect(self.matchExpression(), "expression");
+    //             }
+    //             self.expect(.keyword_do);
+    //             self.expect(self.matchBlock(), "block");
+    //             self.expect(.keyword_end);
+    //         } else {
+    //             while (self.match(.@",")) {
+    //                 self.expect(.identifier);
+    //             }
+    //             self.expect(.keyword_in);
+    //             self.expect(self.matchExpList(), "expression");
+    //             self.expect(.keyword_do);
+    //             self.expect(self.matchBlock(), "block");
+    //             self.expect(.keyword_end);
+    //         }
+    //         return true;
+    //     }
+    //     if (self.match(.keyword_function)) {
+    //         self.expect(.identifier);
+    //         while (self.match(.@".")) {
+    //             self.expect(.identifier);
+    //         }
+    //         if (self.match(.@":")) {
+    //             self.expect(.identifier);
+    //         }
+    //         self.expect(self.matchFuncBody(), "function body");
+    //         return true;
+    //     }
+    //     if (self.match(.keyword_local)) {
+    //         if (self.expect(.keyword_function)) {
+    //             self.expect(.identifier);
+    //             self.expect(self.matchFuncBody(), "function body");
+    //         } else {
+    //             self.expect(.identifier);
+    //             _ = self.matchAttribute();
+    //             while (self.match(.@",")) {
+    //                 self.expect(.identifier);
+    //                 _ = self.matchAttribute();
+    //             }
+    //             if (self.match(.@"=")) {
+    //                 self.expect(self.matchExpList(), "expression");
+    //             }
+    //         }
+    //         return true;
+    //     }
+    //     return false;
+    // }
+    //
+    // fn matchVar(self: *Parser) bool {
+    //     if (self.match(.identifier)) {
+    //         return true;
+    //     }
+    //     if (self.matchPrefixExp()) {
+    //         self.expect(.@"[");
+    //         self.expect(self.matchExpression(), "expression");
+    //         self.expect(.@"]");
+    //         return true;
+    //     }
+    //     if (self.matchPrefixExp()) {
+    //         self.expect(.@".");
+    //         self.expect(.identifier);
+    //     }
+    //     return true;
+    // }
 };
+
+test "semantic analyses" {
+    std.testing.refAllDecls(@This());
+}

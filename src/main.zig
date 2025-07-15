@@ -1,16 +1,52 @@
 const std = @import("std");
-const lx = @import("lexer.zig");
+const Parser = @import("parser.zig").Parser;
+const Lexer = @import("lexer.zig").Lexer;
 
 pub fn main() !void {
-    // const source = "hello";
-    // var tokens = lx.Tokenizer.init(source);
-    // while (true) {
-    //     const token = tokens.next();
-    //     std.debug.print("{s}: {s}\n", .{ @tagName(token.tag), source[token.loc.start..token.loc.end] });
-    //     if (token.tag == .eof) break;
-    // }
+    const gpa = std.heap.smp_allocator; // TODO: Read about this
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    const lexer = Lexer.init(
+        \\ -- Bootstrap lazy.nvim
+        \\ local lazypath = vim.fn.stdpath 'data' .. '/lazy/lazy.nvim'
+        \\ if not (vim.uv or vim.loop).fs_stat(lazypath) then
+        \\   local lazyrepo = 'https://github.com/folke/lazy.nvim.git'
+        \\   local out = vim.fn.system { 'git', 'clone', '--filter=blob:none', '--branch=stable', lazyrepo, lazypath }
+        \\   if vim.v.shell_error ~= 0 then
+        \\     vim.api.nvim_echo({
+        \\       { 'Failed to clone lazy.nvim:\n', 'ErrorMsg' },
+        \\       { out,                            'WarningMsg' },
+        \\       { '\nPress any key to exit...' },
+        \\     }, true, {})
+        \\     vim.fn.getchar()
+        \\     os.exit(1)
+        \\   end
+        \\ end
+        \\ vim.opt.rtp:prepend(lazypath)
+        \\
+        \\ require 'options'
+        \\ require 'keymaps'
+        \\ require 'autocmds'
+        \\
+        \\ require('lazy').setup {
+        \\   spec = {
+        \\     { import = 'plugins' }
+        \\   },
+        \\   ui = {
+        \\     border = 'single',
+        \\     backdrop = 100,
+        \\   },
+        \\   change_detection = { notify = false },
+        \\ }
+    );
+    var parser = Parser.init(lexer, gpa, scratch);
+    while (try parser.parseStatement()) |stat| {
+        std.log.info("{f}", .{stat}); // TODO: Print tree nodes
+    }
 }
 
-// comptime {
-//     std.testing.refAllDeclsRecursive(@This());
-// }
+test "semantic analyses" {
+    std.testing.refAllDecls(@This());
+}
