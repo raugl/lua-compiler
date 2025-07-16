@@ -1,10 +1,13 @@
 const std = @import("std");
 
 pub const NodeID = enum(u32) {
+    root = 0,
     none = 0xffff_ffff,
     _,
 };
 
+// TODO: Should also contain the token for further error reporting could use
+// just `start_idx: u32` and retokenize the `tag` and `end_idx`
 pub const Node = struct {
     tag: Tag,
     lhs: u32,
@@ -72,6 +75,7 @@ pub const Conditional = struct {
     block: NodeID,
 };
 
+// TODO: Add missing variants
 pub const Key = union(enum) {
     @"break",
     label: Slice,
@@ -103,10 +107,10 @@ pub const Key = union(enum) {
     },
     func_decl: struct {
         name: []const Slice,
+        member: ?Slice, // TODO: change everywhere else
         params: []const Slice,
-        block: NodeID,
-        member: bool,
         variadic: bool,
+        block: NodeID,
     },
     func_local: struct {
         name: Slice,
@@ -124,9 +128,9 @@ pub const Key = union(enum) {
         values: []const NodeID,
     },
     func_call: struct {
-        func: NodeID,
+        object: NodeID,
+        member: ?Slice,
         args: []const NodeID,
-        member: bool,
     },
     asignment: struct {
         vars: []const NodeID,
@@ -136,9 +140,9 @@ pub const Key = union(enum) {
 
 pub fn encodeKey(
     alloc: std.mem.Allocator,
+    node: Key,
     nodes: *std.ArrayListUnmanaged(Node),
     extra: *std.ArrayListUnmanaged(u32),
-    node: Key,
 ) !NodeID {
     switch (node) {
         .@"break" => {
@@ -295,7 +299,7 @@ pub fn encodeKey(
             try extra.append(alloc, data.values);
         },
     }
-    return @intCast(nodes.items.len - 1);
+    return @enumFromInt(nodes.items.len - 1);
 }
 
 const Decoder = struct {
@@ -321,11 +325,11 @@ const Decoder = struct {
 };
 
 pub fn decodeKey(
+    node_id: NodeID,
     nodes: []const Node,
     extra: []const u32,
-    node_id: NodeID,
 ) Key {
-    const node = nodes[node_id]; // TODO: Distinct type for NodeID
+    const node = nodes[@intFromEnum(node_id)];
 
     switch (node.tag) {
         .@"break" => {

@@ -1,14 +1,13 @@
 const std = @import("std");
-const Parser = @import("parser.zig").Parser;
-const Lexer = @import("lexer.zig").Lexer;
+const parser = @import("parser.zig");
 
 pub fn main() !void {
     const gpa = std.heap.smp_allocator; // TODO: Read about this
     var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
     const scratch = arena.allocator();
+    defer arena.deinit();
 
-    const lexer = Lexer.init(
+    const result = try parser.parseText(gpa, scratch,
         \\ -- Bootstrap lazy.nvim
         \\ local lazypath = vim.fn.stdpath 'data' .. '/lazy/lazy.nvim'
         \\ if not (vim.uv or vim.loop).fs_stat(lazypath) then
@@ -41,10 +40,10 @@ pub fn main() !void {
         \\   change_detection = { notify = false },
         \\ }
     );
-    var parser = Parser.init(lexer, gpa, scratch);
-    while (try parser.parseStatement()) |stat| {
-        std.log.info("{f}", .{stat}); // TODO: Print tree nodes
-    }
+    defer result.deinit(gpa);
+
+    const root = result.get(.root);
+    std.log.info("{f}", .{root}); // TODO: Print tree nodes
 }
 
 test "semantic analyses" {

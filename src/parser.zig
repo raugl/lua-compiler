@@ -62,26 +62,65 @@ const lx = @import("lexer.zig");
 const meta = std.meta;
 const mem = std.mem;
 
-pub const Parser = struct {
+pub const ParseResult = struct {
+    nodes: []const ast.NodeID,
+    extra: []const u32,
+    // messages: []Message, // TODO
+
+    pub fn deinit(self: ParseResult, alloc: mem.Allocator) void {
+        alloc.free(self.nodes);
+        alloc.free(self.extra);
+    }
+
+    pub fn get(self: ParseResult, id: ast.NodeID) ast.Key {
+        return ast.decodeKey(id, self.nodes, self.extra);
+    }
+};
+
+/// The caller owns the memory, and shoud free it with `res.deinit(alloc)`. To get
+/// a node, use `res.get(node_id)`, and to get the root node use `res.get(.root)`.
+pub fn parse(alloc: mem.Allocator, scratch: mem.Allocator, lexer: lx.Lexer) !ParseResult {
+    var self = Parser.init(alloc, scratch, lexer);
+    const head = try self.nodes.addOne(alloc);
+    const chunk = try self.parseChunk();
+    head.* = self.nodes.items[@intFromEnum(chunk)];
+
+    const nodes = try self.nodes.toOwnedSlice();
+    errdefer alloc.free(nodes);
+    const extra = try self.extra.toOwnedSlice();
+    errdefer alloc.free(extra);
+
+    return ParseResult{ .nodes = nodes, .extra = extra };
+}
+
+/// The caller owns the memory inside `ParseResult`, and shoud free it with
+/// `result.deinit(alloc)`. To get a node, use `result.get(node_id)`, and to get
+/// the root node use `result.get(.root)`.
+pub fn parseText(alloc: mem.Allocator, scratch: mem.Allocator, text: [:0]const u8) !ParseResult {
+    const lexer = lx.Lexer.init(text);
+    return parse(alloc, scratch, lexer);
+}
+
+const Message = struct {
+    loc: lx.Token.Loc,
+    text: []const u8,
+    level: enum { note, warninig, @"error" },
+};
+
+const Parser = struct {
     lexer: lx.Lexer,
     curr_token: lx.Token,
     next_token: lx.Token,
 
-    // PERF: the messages and nodes shouldn't be interleaved by using the same allocator
     alloc: mem.Allocator,
     scratch: mem.Allocator,
 
+    // PERF: the messages and nodes shouldn't be interleaved by using the same allocator
     extra: std.ArrayListUnmanaged(u32) = .empty,
     nodes: std.ArrayListUnmanaged(ast.Node) = .empty,
     messages: std.ArrayListUnmanaged(Message) = .empty,
 
-    const Message = struct {
-        loc: lx.Token.Loc,
-        text: []const u8,
-        level: enum { note, warninig, @"error" },
-    };
-
-    pub fn init(lexer: lx.Lexer, alloc: mem.Allocator, scratch: mem.Allocator) Parser {
+    pub fn init(alloc: mem.Allocator, scratch: mem.Allocator, lexer: lx.Lexer) Parser {
         var self = Parser{
             .lexer = lexer,
             .alloc = alloc,
@@ -102,21 +141,18 @@ pub const Parser = struct {
         }
     }
 
+    // FIXME: this way char token won't be wrapped in quotes
     fn getLexeme(self: Parser, token: lx.Token) []const u8 {
         return self.lexer.buffer[token.loc.start..token.loc.end];
     }
 
-    // TODO:
     fn makeNode(
         self: *Parser,
         comptime tag: meta.Tag(ast.Key),
         data: meta.TagPayload(ast.Key, tag),
     ) mem.Allocator.Error!ast.NodeID {
-        _ = .{ self, tag, data };
-
-        const node_idx = self.nodes.items.len;
-        try self.nodes.append(self.alloc, unreachable); // TODO
-        return node_idx;
+        const key = @unionInit(ast.Key, @tagName(tag), data);
+        return ast.encodeKey(self.alloc, key, &self.nodes, &self.extra);
     }
 
     // TODO:
@@ -145,11 +181,53 @@ pub const Parser = struct {
         }
     }
 
-    // TODO:
-    pub fn parse() void {}
+    pub const parseChunk = parseBlock;
 
-    // TODO:
-    fn parseBlock() void {}
+    fn parseBlock(self: *Parser) !ast.NodeID {
+        var stats = std.ArrayList(ast.NodeID).init(self.scratch);
+        defer stats.deinit();
+        var ret_list = std.ArrayList(ast.NodeID).init(self.scratch);
+        defer ret_list.deinit();
+
+        while (try self.parseStatement()) |stat| {
+            try stats.append(stat);
+        }
+        if (self.match(.keyword_return)) {
+            if (try self.parseExp(0)) |exp| {
+                try ret_list.append(exp);
+
+                while (self.match(.@",")) {
+                    try ret_list.append(try self.expectExp(0));
+                }
+            }
+            _ = self.match(.@";");
+        }
+
+        return self.makeNode(.block, .{
+            .statements = stats.items,
+            .return_list = ret_list.items,
+        });
+    }
+
+    fn parseParamList(self: *Parser) !struct { []const ast.Slice, bool } {
+        var params = std.ArrayList(ast.Slice).init(self.scratch);
+        defer params.definit();
+        var variadic = false;
+
+        self.expect(.@"(");
+        while (true) {
+            if (self.match(.@"...")) {
+                variadic = true;
+                break;
+            }
+            const name = self.expectName();
+            try params.append(name);
+            if (!self.match(.@",")) break;
+        }
+        self.expect(.@")");
+
+        return .{ try params.toOwnedSlice(), variadic };
+    }
 
     // TODO: fix token advancing in parsing
     fn parseExp(self: *Parser, precedence: u8) !?ast.NodeID {
@@ -172,7 +250,6 @@ pub const Parser = struct {
         };
     }
 
-    // TODO: parse anonymus functions
     fn parseUnaryExp(self: *Parser) !?ast.NodeID {
         switch (self.curr_token.tag) {
             .identifier => {
@@ -217,19 +294,34 @@ pub const Parser = struct {
             },
             .literal_number => {
                 const lexeme = self.getLexeme(self.curr_token);
+                // TODO: Distinguish between floats and ints
                 const value = std.fmt.parseInt(i64, lexeme, 10) catch blk: {
                     self.err("could not parse {s} as integer", .{lexeme});
                     break :blk 0;
                 };
                 self.getToken();
-                return self.makeNode(.literal_number, value);
+                return self.makeNode(.literal_int, value);
             },
             .literal_string => {
                 const lexeme = self.getLexeme(self.curr_token);
                 // TODO: Encode the string, place it in static storage section of arena allocator
+                // NOTE: The string encode should be left for latter
                 const value = lexeme;
                 self.getToken();
                 return self.makeNode(.literal_string, value);
+            },
+            .keyword_function => {
+                const params, const variadic = try self.parseParamList();
+                defer self.scratch.free(params);
+
+                const block = try self.parseBlock();
+                self.expect(.keyword_end);
+
+                return self.makeNode(.func_anonym, .{
+                    .params = params,
+                    .block = block,
+                    .variadic = variadic,
+                });
             },
             else => return null,
         }
@@ -264,26 +356,25 @@ pub const Parser = struct {
         const prec = self.curr_token.tag.precedence(true);
 
         if (op == .func_call) {
-            var member: ?ast.NodeID = null;
+            var member: ?ast.Slice = null;
             if (self.match(.@":")) {
                 member = self.expectName();
             }
+            if (try self.parseArgList()) |args| {
+                defer self.scratch.free(args);
+                return self.makeNode(.func_call, .{
+                    .object = lhs,
+                    .member = member,
+                    .args = args,
+                });
+            }
 
-            var should_free = false;
-            const args = blk: {
-                if (try self.parseTableConstructor()) |args| {
-                    break :blk args;
-                } else if (try self.parseArgList()) |args| {
-                    should_free = true;
-                    break :blk args;
-                } else {
-                    // FIXME: both of these 2 consume the token
-                    self.expect(.literal_string);
-                    break :blk self.parseString();
-                }
+            const args = try self.parseTableConstructor() orelse blk: {
+                self.err("expected string literal, found {s}", .{
+                    self.getLexeme(self.curr_token),
+                });
+                break :blk self.parseString();
             };
-            defer if (should_free) self.scratch.free(args);
-
             return self.makeNode(.func_call, .{
                 .object = lhs,
                 .member = member,
@@ -373,18 +464,10 @@ pub const Parser = struct {
         return null;
     }
 
-    const File = struct {
-        file: std.fs.File,
-        ptr: []align(std.heap.page_size_min) u8,
-
-        pub fn deinit(self: @This()) void {
-            std.posix.munmap(self.ptr);
-            self.file.close();
-        }
-    };
-
-    pub fn parseStatement(self: *Parser) !?ast.NodeID {
+    // FIXME: What happens in an expect fails???
+    fn parseStatement(self: *Parser) !?ast.NodeID {
         switch (self.curr_token.tag) {
+            // TODO: var {‘,’ var} ‘=’ explist
             .@";" => {
                 self.getToken();
                 return self.parseStatement();
@@ -406,7 +489,7 @@ pub const Parser = struct {
             },
             .keyword_do => {
                 self.getToken();
-                const block = self.expectBlock();
+                const block = try self.parseBlock();
                 self.expect(.keyword_end);
                 return block;
             },
@@ -414,7 +497,7 @@ pub const Parser = struct {
                 self.getToken();
                 const cond = try self.expectExp(0);
                 self.expect(.keyword_do);
-                const block = self.expectBlock();
+                const block = try self.parseBlock();
                 self.expect(.keyword_end);
                 return self.makeNode(.@"while", .{
                     .cond = cond,
@@ -423,7 +506,7 @@ pub const Parser = struct {
             },
             .keyword_repeat => {
                 self.getToken();
-                const block = self.expectBlock();
+                const block = try self.parseBlock();
                 self.expect(.keyword_until);
                 const cond = try self.expectExp(0);
                 self.expect(.keyword_end);
@@ -441,12 +524,12 @@ pub const Parser = struct {
                     const branch = try branches.addOne();
                     branch.cond = self.expectExpression();
                     self.expect(.keyword_then);
-                    branch.block = self.expectBlock();
+                    branch.block = try self.parseBlock();
 
                     if (!self.match(.keyword_elseif)) break;
                 }
                 if (self.match(.keyword_else)) {
-                    const else_block = self.expectBlock();
+                    const else_block = try self.parseBlock();
                     self.expect(.keyword_end);
 
                     return self.makeNode(.if_else, .{
@@ -471,7 +554,7 @@ pub const Parser = struct {
                     if (self.match(.@",")) {
                         const step = try self.expectExp(0);
                         self.expect(.keyword_do);
-                        const block = self.expectBlock();
+                        const block = try self.parseBlock();
                         self.expect(.keyword_end);
 
                         return self.makeNode(.for_init_step, .{
@@ -483,7 +566,7 @@ pub const Parser = struct {
                         });
                     }
                     self.expect(.keyword_do);
-                    const block = self.expectBlock();
+                    const block = try self.parseBlock();
                     self.expect(.keyword_end);
                     return self.makeNode(.for_init, .{
                         .name = name,
@@ -509,7 +592,7 @@ pub const Parser = struct {
                         if (!self.match(.@",")) break;
                     }
                     self.expect(.keyword_do);
-                    const block = self.expectBlock();
+                    const block = try self.parseBlock();
                     self.expect(.keyword_end);
 
                     return self.makeNode(.for_each, .{
@@ -522,11 +605,6 @@ pub const Parser = struct {
             .keyword_function => {
                 var names = std.ArrayList(ast.Slice).init(self.scratch);
                 defer names.deinit();
-                var params = std.ArrayList(ast.Slice).init(self.scratch);
-                defer params.definit();
-
-                var is_member = false;
-                var is_variadic = false;
 
                 self.getToken();
                 while (true) {
@@ -534,43 +612,47 @@ pub const Parser = struct {
                     try names.append(name);
                     if (!self.match(.@".")) break;
                 }
+
+                var member = false;
                 if (self.match(.@":")) {
                     const name = self.expectName();
                     try names.append(name);
-                    is_member = true;
+                    member = true;
                 }
 
-                self.expect(.@"(");
-                while (true) {
-                    if (self.match(.@"...")) {
-                        is_variadic = true;
-                        break;
-                    }
-                    const name = self.expectName();
-                    try params.append(name);
-                    if (!self.match(.@",")) break;
-                }
-                self.expect(.@")");
+                const params, const variadic = try self.parseParamList();
+                defer self.scratch.free(params);
 
-                return self.makeNode(.func_def, .{
+                const block = try self.parseBlock();
+                self.expect(.keyword_end);
+
+                return self.makeNode(.func_decl, .{
                     .name = names.items,
-                    .params = params.items,
-                    .block = self.expectFuncBody(),
-                    .member = is_member,
-                    .variadic = is_variadic,
+                    .params = params,
+                    .block = block,
+                    .member = member,
+                    .variadic = variadic,
                 });
             },
-            // TODO: go over this
             .keyword_local => {
                 self.getToken();
                 if (self.match(.keyword_function)) {
                     const name = self.expectName();
-                    const body = self.expectFuncBody();
-                    return self.makeNode(.local_func_def, .{
+
+                    const params, const variadic = try self.parseParamList();
+                    defer self.scratch.free(params);
+
+                    const block = try self.parseBlock();
+                    self.expect(.keyword_end);
+
+                    return self.makeNode(.func_local, .{
                         .name = name,
-                        .body = body,
+                        .params = params,
+                        .block = block,
+                        .variadic = variadic,
                     });
                 } else {
+                    // TODO: go over this
                     var names = std.ArrayList(ast.Slice).init(self.scratch);
                     defer names.deinit();
 
@@ -597,29 +679,7 @@ pub const Parser = struct {
         }
     }
 
-    // ==== TODO: ==================================================================================
-
-    // pub fn parse(self: *Parser, alloc: Allocator) ![]const Key {
-    //     // TODO: parsing
-    //
-    //     // TODO: flush messages
-    //     // NOTE: the message queue may need to be encoded as a some sort of
-    //     // tree so that it can be sorted while preserving the order of context
-    //     // messages
-    //     return self.nodes.toOwnedSlice(alloc);
-    // }
-    //
-    //
-    // fn parseBlock(self: *Parser) bool {
-    //     while (self.matchStatement()) {}
-    //     if (self.match(.keyword_return)) {
-    //         if (self.matchExpList()) {}
-    //         if (self.match(.semicolon)) {}
-    //     }
-    //     return true;
-    // }
-    //
-    // // FIXME: What happens in an expect fails???
+    // FIXME: What happens in an expect fails???
     // fn matchStatement(self: *Parser) bool {
     //     if (self.match(.@";") or self.matchFuncCall() or self.match(.keyword_break)) {
     //         return true;

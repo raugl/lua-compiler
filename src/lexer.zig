@@ -1,7 +1,8 @@
 const std = @import("std");
 
-// TODO: relax the requirements for valid escape sequences
-// TODO: setup fuzz testing
+// TODO: Add token lexemes for better error messages
+// TODO: Relax the requirements for valid escape sequences
+// TODO: Setup fuzz testing
 
 pub const Token = struct {
     tag: Tag,
