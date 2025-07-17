@@ -4,14 +4,30 @@ const std = @import("std");
 // TODO: Relax the requirements for valid escape sequences
 // TODO: Setup fuzz testing
 
+pub const Precedence = enum(u8) {
+    none,
+    logic_or,
+    logic_and,
+    comparison,
+    bitwise_or,
+    bitwise_and,
+    bit_shift,
+    str_concat,
+    add,
+    mul,
+    negate,
+    exponent,
+    func_call, // This is for function calls, member access, and subscript access
+};
+
+pub const Location = struct {
+    start: u32,
+    end: u32,
+};
+
 pub const Token = struct {
     tag: Tag,
-    loc: Loc,
-
-    pub const Loc = struct {
-        start: usize,
-        end: usize,
-    };
+    loc: Location,
 
     pub const Tag = enum {
         eof,
@@ -76,40 +92,46 @@ pub const Token = struct {
         keyword_until,
         keyword_while,
 
-        pub const Precedence = enum(u8) {
-            none,
-            logic_or,
-            logic_and,
-            comparison,
-            bitwise_or,
-            bitwise_and,
-            bit_shift,
-            str_concat,
-            add,
-            mul,
-            negate,
-            exponent,
-            func_call, // This is for function calls, member access, and subscript access
-        };
-
-        pub fn precedence(tag: Tag, is_prefix: bool) u8 {
+        pub fn lexeme(tag: Tag) [:0]const u8 {
             return switch (tag) {
-                .keyword_or => .logic_or,
-                .keyword_and => .logic_and,
-                .@"=", .@"~=", .@"<", .@">", .@"<=", .@">=" => .comparison,
-                .@"|" => .bitwise_or,
-                .@"&" => .bitwise_and,
-                .@"<<", .@">>" => .bit_shift,
-                .@".." => .str_concat,
-                .@"+" => .add,
-                .@"*", .@"/", .@"//", .@"%" => .mul,
-                .@"#", .@"~", .keyword_not => .negate,
-                .@"-" => if (is_prefix) .negate else .add,
-                .@"^" => .exponent,
-                else => 0,
+                .eof => "<eof>",
+                .invalid => "<invalid>",
+                .comment => "<comment>",
+                .identifier => "<name>",
+                .literal_number => "<number>",
+                .literal_string => "<string>",
+                inline else => |foo| {
+                    const name = @tagName(foo);
+                    return if (name.len > 8)
+                        "`" ++ name[8..] ++ "`"
+                    else
+                        "symbol `" ++ name ++ "`";
+                },
             };
         }
     };
+
+    pub fn precedence(self: Token, is_prefix: bool) Precedence {
+        return switch (self.tag) {
+            .keyword_or => .logic_or,
+            .keyword_and => .logic_and,
+            .@"=", .@"~=", .@"<", .@">", .@"<=", .@">=" => .comparison,
+            .@"|" => .bitwise_or,
+            .@"&" => .bitwise_and,
+            .@"<<", .@">>" => .bit_shift,
+            .@".." => .str_concat,
+            .@"+" => .add,
+            .@"*", .@"/", .@"//", .@"%" => .mul,
+            .@"#", .@"~", .keyword_not => .negate,
+            .@"-" => if (is_prefix) .negate else .add,
+            .@"^" => .exponent,
+            else => .none,
+        };
+    }
+
+    pub fn getKeyword(bytes: []const u8) ?Tag {
+        return keywords.get(bytes);
+    }
 
     pub const keywords = std.StaticStringMap(Tag).initComptime(.{
         .{ "and", .keyword_and },
@@ -135,15 +157,11 @@ pub const Token = struct {
         .{ "until", .keyword_until },
         .{ "while", .keyword_while },
     });
-
-    pub fn getKeyword(bytes: []const u8) ?Tag {
-        return keywords.get(bytes);
-    }
 };
 
 pub const Lexer = struct {
     buffer: [:0]const u8,
-    index: usize,
+    index: u32,
 
     const State = enum {
         start,
