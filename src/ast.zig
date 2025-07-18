@@ -1,79 +1,7 @@
 const std = @import("std");
 const meta = std.meta;
+const mem = std.mem;
 const assert = std.debug.assert;
-
-// TODO: Should also contain the token for further error reporting could use
-// just `start_idx: u32` and retokenize the `tag` and `end_idx`
-pub const Node = struct {
-    tag: Tag,
-    lhs: u32,
-    rhs: u32,
-
-    const Tag = enum(u8) {
-        assignment,
-        @"break",
-        label,
-        goto,
-        block,
-        repeat_loop,
-        while_loop,
-        if_block,
-        if_else,
-        for_loop,
-        for_loop_step,
-        for_each,
-        func_decl,
-        func_decl_variadic,
-        func_decl_member,
-        func_decl_member_variadic,
-        func_local,
-        func_local_variadic,
-        func_anonym,
-        func_anonym_variadic,
-        local_decl,
-        local_decl_init,
-
-        identifier,
-        literal_nil,
-        literal_true,
-        literal_false,
-        literal_ellipsis,
-        literal_int,
-        literal_float,
-        literal_string,
-        table_contructor,
-        func_call,
-        func_call_member,
-
-        logic_not,
-        bit_not,
-        negate,
-        length,
-
-        logic_or,
-        logic_and,
-        less_than,
-        greater_than,
-        less_equal,
-        greater_equal,
-        not_equal,
-        equal,
-        bit_or,
-        bit_and,
-        l_bit_shift,
-        r_bit_shift,
-        str_concat,
-        add,
-        sub,
-        mul,
-        div,
-        int_div,
-        modulo,
-        exponent,
-        dot_access,
-        index_access,
-    };
-};
 
 pub const NodeID = enum(u32) {
     root = 0,
@@ -82,35 +10,117 @@ pub const NodeID = enum(u32) {
 };
 
 pub const UnaryOp = enum(u8) {
-    logic_not = @intFromEnum(Node.Tag.logic_not),
-    bit_not = @intFromEnum(Node.Tag.bit_not),
-    negate = @intFromEnum(Node.Tag.negate),
-    length = @intFromEnum(Node.Tag.length),
+    logic_not,
+    bit_not,
+    negate,
+    length,
 };
 
 pub const BinaryOp = enum(u8) {
-    logic_or = @intFromEnum(Node.Tag.logic_or),
-    logic_and = @intFromEnum(Node.Tag.logic_and),
-    equal = @intFromEnum(Node.Tag.equal),
-    not_equal = @intFromEnum(Node.Tag.not_equal),
-    less_than = @intFromEnum(Node.Tag.less_than),
-    greater_than = @intFromEnum(Node.Tag.greater_than),
-    less_equal = @intFromEnum(Node.Tag.less_equal),
-    greater_equal = @intFromEnum(Node.Tag.greater_equal),
-    bit_or = @intFromEnum(Node.Tag.bit_or),
-    bit_and = @intFromEnum(Node.Tag.bit_and),
-    l_bit_shift = @intFromEnum(Node.Tag.l_bit_shift),
-    r_bit_shift = @intFromEnum(Node.Tag.r_bit_shift),
-    str_concat = @intFromEnum(Node.Tag.str_concat),
-    add = @intFromEnum(Node.Tag.add),
-    sub = @intFromEnum(Node.Tag.sub),
-    mul = @intFromEnum(Node.Tag.mul),
-    div = @intFromEnum(Node.Tag.div),
-    int_div = @intFromEnum(Node.Tag.int_div),
-    modulo = @intFromEnum(Node.Tag.modulo),
-    exponent = @intFromEnum(Node.Tag.exponent),
-    dot_access = @intFromEnum(Node.Tag.dot_access),
-    index_access = @intFromEnum(Node.Tag.index_access),
+    logic_or,
+    logic_and,
+    equal,
+    not_equal,
+    less_than,
+    greater_than,
+    less_equal,
+    greater_equal,
+    bit_or,
+    bit_and,
+    l_bit_shift,
+    r_bit_shift,
+    str_concat,
+    add,
+    sub,
+    mul,
+    div,
+    int_div,
+    modulo,
+    exponent,
+    dot_access,
+    index_access,
+};
+
+
+// TODO: Make this enum determine the values and set the others based on it
+pub const NodeTag = enum(u8) {
+    for_loop,
+    for_loop_step,
+
+    func_decl,
+    func_decl_variadic,
+    func_decl_member,
+    func_decl_member_variadic,
+
+    func_local,
+    func_local_variadic,
+
+    func_anonym,
+    func_anonym_variadic,
+
+    local_decl,
+    local_decl_init,
+
+    func_call,
+    func_call_member,
+
+    assignment = @intFromEnum(KeyTag.assignment),
+    @"break" = @intFromEnum(KeyTag.@"break"),
+    label = @intFromEnum(KeyTag.label),
+    goto = @intFromEnum(KeyTag.goto),
+    block = @intFromEnum(KeyTag.block),
+    repeat_loop = @intFromEnum(KeyTag.repeat_loop),
+    while_loop = @intFromEnum(KeyTag.while_loop),
+    if_block = @intFromEnum(KeyTag.if_block),
+    if_else = @intFromEnum(KeyTag.if_else),
+    for_each = @intFromEnum(KeyTag.for_each),
+    identifier = @intFromEnum(KeyTag.identifier),
+    literal_nil = @intFromEnum(KeyTag.literal_nil),
+    literal_true = @intFromEnum(KeyTag.literal_true),
+    literal_false = @intFromEnum(KeyTag.literal_false),
+    literal_ellipsis = @intFromEnum(KeyTag.literal_ellipsis),
+    literal_int = @intFromEnum(KeyTag.literal_int),
+    literal_float = @intFromEnum(KeyTag.literal_float),
+    literal_string = @intFromEnum(KeyTag.literal_string),
+    table_constructor = @intFromEnum(KeyTag.table_constructor),
+
+    logic_not = @intFromEnum(UnaryOp.logic_not),
+    bit_not = @intFromEnum(UnaryOp.bit_not),
+    negate = @intFromEnum(UnaryOp.negate),
+    length = @intFromEnum(UnaryOp.length),
+
+    logic_or = @intFromEnum(BinaryOp.logic_or),
+    logic_and = @intFromEnum(BinaryOp.logic_and),
+    equal = @intFromEnum(BinaryOp.equal),
+    not_equal = @intFromEnum(BinaryOp.not_equal),
+    less_than = @intFromEnum(BinaryOp.less_than),
+    greater_than = @intFromEnum(BinaryOp.greater_than),
+    less_equal = @intFromEnum(BinaryOp.less_equal),
+    greater_equal = @intFromEnum(BinaryOp.greater_equal),
+    bit_or = @intFromEnum(BinaryOp.bit_or),
+    bit_and = @intFromEnum(BinaryOp.bit_and),
+    l_bit_shift = @intFromEnum(BinaryOp.l_bit_shift),
+    r_bit_shift = @intFromEnum(BinaryOp.r_bit_shift),
+    str_concat = @intFromEnum(BinaryOp.str_concat),
+    add = @intFromEnum(BinaryOp.add),
+    sub = @intFromEnum(BinaryOp.sub),
+    mul = @intFromEnum(BinaryOp.mul),
+    div = @intFromEnum(BinaryOp.div),
+    int_div = @intFromEnum(BinaryOp.int_div),
+    modulo = @intFromEnum(BinaryOp.modulo),
+    exponent = @intFromEnum(BinaryOp.exponent),
+    dot_access = @intFromEnum(BinaryOp.dot_access),
+    index_access = @intFromEnum(BinaryOp.index_access),
+};
+
+// TODO: Should also contain the token for further error reporting could use
+// just `start_idx: u32` and retokenize the `tag` and `end_idx`
+pub const Node = struct {
+    tag: NodeTag,
+    data: struct {
+        lhs: u32,
+        rhs: u32,
+    },
 };
 
 pub const Slice = struct {
@@ -129,17 +139,17 @@ pub const Conditional = struct {
 };
 
 pub const Field = struct {
-    key: ?NodeID = null,
+    key: NodeID = .none,
     value: NodeID,
 };
 
 // TODO: Add missing variants
 pub const Key = union(enum) {
-    asignment: struct {
+    assignment: struct {
         names: []const NodeID,
         values: []const NodeID,
     },
-    @"break",
+    @"break": void,
     label: Slice,
     goto: Slice,
     block: struct {
@@ -149,6 +159,7 @@ pub const Key = union(enum) {
     repeat_loop: Conditional,
     while_loop: Conditional,
     if_block: struct {
+        // PERF: Introduce an if block without elseifs, this would fully fit in a single Node
         branches: []const Conditional,
     },
     if_else: struct {
@@ -158,7 +169,7 @@ pub const Key = union(enum) {
     for_loop: struct {
         name: Slice,
         start: NodeID,
-        step: ?NodeID = null,
+        step: ?NodeID,
         end: NodeID,
         block: NodeID,
     },
@@ -169,7 +180,7 @@ pub const Key = union(enum) {
     },
     func_decl: struct {
         names: []const Slice,
-        member: ?Slice = null, // TODO: change everywhere else
+        member: ?Slice, // TODO: change everywhere else
         params: []const Slice,
         variadic: bool,
         block: NodeID,
@@ -190,10 +201,10 @@ pub const Key = union(enum) {
         values: []const NodeID,
     },
     identifier: Slice,
-    literal_nil,
-    literal_true,
-    literal_false,
-    literal_ellipsis,
+    literal_nil: void,
+    literal_true: void,
+    literal_false: void,
+    literal_ellipsis: void,
     literal_int: i64,
     literal_float: f64,
     literal_string: Slice,
@@ -202,7 +213,7 @@ pub const Key = union(enum) {
     },
     func_call: struct {
         object: NodeID,
-        member: ?Slice = null,
+        member: ?Slice,
         args: []const NodeID,
     },
     unary_op: struct {
@@ -216,15 +227,353 @@ pub const Key = union(enum) {
     },
 };
 
-// TODO: Do the missing nodes
 pub fn encodeKey(
-    alloc: std.mem.Allocator,
+    alloc: mem.Allocator,
+    node: Key,
+    nodes: *std.ArrayListUnmanaged(Node),
+    extra: *std.ArrayListUnmanaged(u32),
+) mem.Allocator.Error!NodeID {
+    switch (node) {
+        .@"break",
+        .literal_nil,
+        .literal_true,
+        .literal_false,
+        .literal_ellipsis,
+        => {
+            const tag = meta.activeTag(node);
+            return @enumFromInt(@intFromEnum(tag));
+        },
+        .for_loop => |data| {
+            const tag = if (data.step) |_| .for_loop_step else .for_loop;
+            return try encodeKeyImpl(alloc, nodes, extra, tag, data);
+        },
+        .func_decl => |data| {
+            const tag = switch (data.variadic) {
+                true => if (data.member) |_| .func_decl_member_variadic else .func_decl_variadic,
+                false => if (data.member) |_| .func_decl_member else .func_decl,
+            };
+            return try encodeKeyImpl(alloc, nodes, extra, tag, data);
+        },
+        .func_local => |data| {
+            const tag = if (data.variadic) .func_local_variadic else .func_local;
+            return try encodeKeyImpl(alloc, nodes, extra, tag, data);
+        },
+        .func_anonym => |data| {
+            const tag = if (data.variadic) .func_anonym_variadic else .func_anonym;
+            return try encodeKeyImpl(alloc, nodes, extra, tag, data);
+        },
+        inline .unary_op, .binary_op => |data| {
+            const tag = @intFromEnum(data.op);
+            return try encodeKeyImpl(alloc, nodes, extra, @enumFromInt(tag), data);
+        },
+        inline else => |data| {
+            const tag = @tagName(meta.activeTag(node));
+            return try encodeKeyImpl(alloc, nodes, extra, tag, data);
+        },
+    }
+}
+
+fn encodeKeyImpl(
+    alloc: mem.Allocator,
+    nodes: *std.ArrayListUnmanaged(Node),
+    extra: *std.ArrayListUnmanaged(u32),
+    tag: NodeTag,
+    data: anytype,
+) mem.Allocator.Error!NodeID {
+    const T = @TypeOf(data);
+
+    var sizeof: u32 = 0;
+    const use_extra = inline for (meta.fields(T)) |field| {
+        const info = @typeInfo(field.type);
+
+        sizeof += switch (info) {
+            .bool => 0,
+            .optional => |opt| if (@field(data, field.name)) |_| @sizeOf(opt.child) else 0,
+            .pointer => |ptr| if (ptr.size == .slice) break true else @sizeOf(ptr.child),
+            else => @sizeOf(field.type),
+        };
+    };
+
+    const id = nodes.items.len;
+    const node = try nodes.addOne(alloc);
+    node.tag = tag;
+
+    var e = Encoder.init(alloc, extra, node, use_extra or sizeof > 8);
+    try e.put();
+    return @enumFromInt(id);
+}
+
+const Encoder = struct {
+    alloc: mem.Allocator,
+    extra: *std.ArrayListUnmanaged(u32),
+    node: *Node,
+    index: u32,
+
+    fn init(
+        alloc: mem.Allocator,
+        extra: *std.ArrayListUnmanaged(u32),
+        node: *Node,
+        use_extra: bool,
+    ) Encoder {
+        if (use_extra) node.data.lhs = @intCast(extra.len);
+        return Encoder{ .alloc = alloc, .extra = extra, .node = node, .index = @intFromBool(use_extra) };
+    }
+
+    fn put(self: *Encoder, data: anytype) mem.Allocator.Error!void {
+        const T = @TypeOf(data);
+        const info = @typeInfo(T);
+
+        switch (info) {
+            .bool => return,
+            .@"enum" => {
+                if (T != NodeID) return;
+                return self.putU32(@intFromEnum(data));
+            },
+            .optional => {
+                if (data) |d| return self.put(d);
+            },
+            .int, .float => {
+                if (self.index < 2) {
+                    if (@sizeOf(T) == 8) {
+                        assert(self.index == 0);
+                        self.index += 2;
+                        self.node.data = @bitCast(data);
+                    }
+                    assert(@sizeOf(T) == 4);
+                    defer self.index += 1;
+                    switch (self.index) {
+                        0 => self.node.lhs = @bitCast(data),
+                        1 => self.node.rhs = @bitCast(data),
+                        else => unreachable,
+                    }
+                } else {
+                    assert(@sizeOf(T) % 4 == 0);
+                    const len = @sizeOf(T) / 4;
+                    const ptr: [*]u32 = @ptrCast(@alignCast(&data));
+
+                    try self.extra.appendSlice(self.alloc, ptr[0..len]);
+                    self.index += len;
+                }
+            },
+            .pointer => |pointer| if (pointer.size == .slice) {
+                assert(self.index > 0);
+                const len = data.len * @sizeOf(pointer.child) / 4;
+                const ptr: [*]u32 = @ptrCast(data.ptr);
+
+                self.putU32(@intCast(data.len));
+                try self.extra.appendSlice(self.alloc, ptr[0..len]);
+                self.index += len;
+            } else {
+                @compileError("Unencodable pointer type: " ++ @typeName(T));
+            },
+            .@"struct" => {
+                inline for (meta.fields(T)) |field| {
+                    return self.put(@field(T, field.name));
+                }
+            },
+            else => @compileError("Unencodable type: " ++ @typeName(T)),
+        }
+    }
+
+    fn putU32(self: *Encoder, data: u32) mem.Allocator.Error!void {
+        try self.put(data);
+    }
+};
+
+pub fn decodeKey(
+    node_id: NodeID,
+    nodes: []const Node,
+    extra: []const u32,
+) Key {
+    const node = nodes[@intFromEnum(node_id)];
+
+    return switch (node.tag) {
+        .for_loop,
+        .for_loop_step,
+        => decodeKeyImpl("for_loop", node, extra, .{
+            .step = (node.tag == .for_loop_step),
+        }),
+        .func_decl,
+        .func_decl_variadic,
+        .func_decl_member,
+        .func_decl_member_variadic,
+        => return decodeKeyImpl("func_decl", node, extra, .{
+            .member = (node.tag == .func_decl_member or node.tag == .func_decl_member_variadic),
+            .variadic = (node.tag == .func_decl_variadic or node.tag == .func_decl_member_variadic),
+        }),
+        .func_local,
+        .func_local_variadic,
+        => decodeKeyImpl("func_local", node, extra, .{
+            .variadic = (node.tag == .func_local_variadic),
+        }),
+        .func_anonym,
+        .func_anonym_variadic,
+        => decodeKeyImpl("func_anonym", node, extra, .{
+            .variadic = (node.tag == .func_anonym_variadic),
+        }),
+        .func_call,
+        .func_call_member,
+        => decodeKeyImpl("func_call", node, extra, .{
+            .member = (node.tag == .func_call_member),
+        }),
+        .logic_not,
+        .bit_not,
+        .negate,
+        .length,
+        => decodeKeyImpl("unary_op", node, extra, .{
+            .op = @intFromEnum(node.tag),
+        }),
+        .logic_or,
+        .logic_and,
+        .less_than,
+        .greater_than,
+        .less_equal,
+        .greater_equal,
+        .not_equal,
+        .equal,
+        .bit_or,
+        .bit_and,
+        .l_bit_shift,
+        .r_bit_shift,
+        .str_concat,
+        .add,
+        .sub,
+        .mul,
+        .div,
+        .int_div,
+        .modulo,
+        .exponent,
+        .dot_access,
+        .index_access,
+        => decodeKeyImpl("binary_op", node, extra, .{
+            .op = @intFromEnum(node.tag),
+        }),
+        inline else => |tag| decodeKeyImpl(@tagName(tag), node, extra, .{}),
+    };
+}
+
+// PERF: Encode value-less variants inside the NodeID
+fn decodeKeyImpl(
+    comptime tag_name: []const u8,
+    node: Node,
+    extra: []const u32,
+    args: anytype,
+) Key {
+    const T = meta.TagPayloadByName(Key, tag_name);
+    var sizeof: u32 = 0;
+    const use_extra = inline for (meta.fields(T)) |field| {
+        const info = @typeInfo(field.type);
+
+        sizeof += switch (info) {
+            .bool => 0,
+            .optional => |opt| if (@field(args, field.name)) @sizeOf(opt.child) else 0,
+            .pointer => |ptr| if (ptr.size == .slice) break true else @sizeOf(ptr.child),
+            else => @sizeOf(field.type),
+        };
+    };
+    var d = Decoder.init(node, extra, use_extra or sizeof > 8);
+    return @unionInit(Key, tag_name, d.getImpl(undefined, T, args));
+}
+
+const Decoder = struct {
+    node: Node,
+    extra: []const u32,
+    index: u32 = 0,
+
+    fn init(node: Node, extra: []const u32, use_extra: bool) Decoder {
+        return Decoder{
+            .node = node,
+            .extra = extra,
+            .index = @intFromBool(use_extra),
+        };
+    }
+
+    fn get(self: *Decoder, comptime field: anytype, args: anytype) field.type {
+        if (@hasField(@TypeOf(args), field.name)) {
+            return self.getImpl(field.name, field.type, @field(args, field.name));
+        } else {
+            return self.getImpl(field.name, field.type, {});
+        }
+    }
+
+    fn getImpl(self: *Decoder, comptime name: []const u8, comptime T: type, args: anytype) T {
+        const U = @TypeOf(args);
+        const info = @typeInfo(T);
+        switch (info) {
+            .bool => {
+                return @hasField(U, name) and @field(args, name);
+            },
+            .@"enum" => |e| {
+                if (@sizeOf(e.tag_type) < 4) { // TODO: if its a NodeID
+                    return @enumFromInt(@field(args, name));
+                }
+                assert(@sizeOf(e.tag_type) == 4);
+                const tag = self.getImpl(undefined, u32, void);
+                return @enumFromInt(tag);
+            },
+            .optional => |opt| {
+                // TODO: if T == ?NodeID, use .none
+                if (@hasField(U, name) and @field(args, name)) {
+                    return self.getImpl(name, opt.child, args);
+                } else {
+                    return null;
+                }
+            },
+            .int, .float => {
+                if (self.index < 2) {
+                    if (@sizeOf(T) == 8) {
+                        assert(self.index == 0);
+                        self.index += 2;
+                        return @bitCast(self.node.data);
+                    }
+                    assert(@sizeOf(T) == 4);
+                    defer self.index += 1;
+                    switch (self.index) {
+                        0 => return @bitCast(self.node.data.lhs),
+                        1 => return @bitCast(self.node.data.rhs),
+                        else => unreachable,
+                    }
+                } else {
+                    assert(@sizeOf(T) % 4 == 0);
+                    const len = @sizeOf(T) / 4;
+                    const idx = self.node.data.lhs + self.index - 2;
+                    self.index += len;
+
+                    const ptr = self.extra[idx..].ptr;
+                    return @as(*T, @ptrCast(@alignCast(ptr))).*;
+                }
+            },
+            .pointer => |ptr| if (ptr.size == .slice) {
+                assert(self.index > 0);
+                const len = self.getImpl(undefined, u32, void);
+                const idx = self.node.data.lhs + self.index - 2;
+                const slice = self.extra[idx..][0..len];
+                self.index += len;
+                return slice;
+            } else {
+                @compileError("Undecodable pointer type: " ++ @typeName(T));
+            },
+            .@"struct" => {
+                var res: T = undefined;
+                inline for (meta.fields(T)) |field| {
+                    @field(res, field.name) = self.get(field, U);
+                }
+                return res;
+            },
+            else => @compileError("Undecodable type: " ++ @typeName(T)),
+        }
+    }
+};
+
+// TODO: Do the missing nodes
+pub fn old_encodeKey(
+    alloc: mem.Allocator,
     node: Key,
     nodes: *std.ArrayListUnmanaged(Node),
     extra: *std.ArrayListUnmanaged(u32),
 ) !NodeID {
     switch (node) {
-        .asignment => |data| {
+        .assignment => |data| {
             try nodes.append(alloc, .{
                 .tag = .assignment,
                 .lhs = @intCast(extra.items.len),
@@ -397,286 +746,6 @@ pub fn encodeKey(
         .binary_op => {},
     }
     return @enumFromInt(nodes.items.len - 1);
-}
-
-// const Decoder = struct {
-//     idx: u32,
-//     buffer: []const u32,
-//
-//     fn init(buffer: []const u32, start_idx: u32) Decoder {
-//         return Decoder{ .idx = start_idx, .buffer = buffer };
-//     }
-//
-//     fn decode(self: *Decoder, comptime T: type, count: u32) []const T {
-//         std.debug.assert(@alignOf(T) <= @alignOf(u32));
-//
-//         const len = count * @sizeOf(T) / @sizeOf(u32);
-//         defer self.idx += len;
-//         return @ptrCast(@alignCast(self.buffer[self.idx .. self.idx + len]));
-//     }
-//
-//     fn decodeOne(self: *Decoder) u32 {
-//         defer self.idx += 1;
-//         return self.buffer[self.idx];
-//     }
-// };
-
-// TODO: Do the missing nodes
-pub fn decodeKey(
-    node_id: NodeID,
-    nodes: []const Node,
-    extra: []const u32,
-) Key {
-    const node = nodes[@intFromEnum(node_id)];
-
-    switch (node.tag) {
-        .assignment => {
-            // unreachable;
-            return .@"break";
-        },
-        .@"break" => {
-            return .@"break";
-        },
-        .label => {
-            return Key{ .label = .{
-                .start = node.lhs,
-                .len = node.rhs,
-            } };
-        },
-        .goto => {
-            return Key{ .goto = .{
-                .start = node.lhs,
-                .len = node.rhs,
-            } };
-        },
-        .block => {
-            var d = Decoder.init(extra, node.lhs);
-            const stat_len = node.rhs;
-            const ret_len = d.decodeOne();
-
-            var res: @FieldType(Key, "block") = undefined;
-            res.statements = d.decode(NodeID, stat_len);
-            res.return_list = d.decode(NodeID, ret_len);
-            return Key{ .block = res };
-        },
-        .repeat_loop => {
-            return Key{ .repeat_loop = .{
-                .cond = @enumFromInt(node.lhs),
-                .block = @enumFromInt(node.rhs),
-            } };
-        },
-        .while_loop => {
-            return Key{ .while_loop = .{
-                .cond = @enumFromInt(node.lhs),
-                .block = @enumFromInt(node.rhs),
-            } };
-        },
-        .if_block => {
-            var res: @FieldType(Key, "if_block") = undefined;
-            var d = Decoder.init(extra, node.lhs);
-
-            const branches_len = node.rhs;
-            res.branches = d.decode(Conditional, branches_len);
-            return Key{ .if_block = res };
-        },
-        .if_else => {
-            var res: @FieldType(Key, "if_else") = undefined;
-            var d = Decoder.init(extra, node.lhs);
-
-            const branches_len = node.rhs;
-            res.else_block = @enumFromInt(d.decodeOne());
-            res.branches = d.decode(Conditional, branches_len);
-            return Key{ .if_else = res };
-        },
-        .for_loop => {
-            var res: @FieldType(Key, "for_loop") = undefined;
-            var d = Decoder.init(extra, node.lhs);
-
-            res.block = @enumFromInt(node.rhs);
-            res.name.start = d.decodeOne();
-            res.name.len = d.decodeOne();
-            res.start = @enumFromInt(d.decodeOne());
-            res.step = null;
-            res.end = @enumFromInt(d.decodeOne());
-            return Key{ .for_loop = res };
-        },
-        .for_loop_step => {
-            var res: @FieldType(Key, "for_loop") = undefined;
-            var d = Decoder.init(extra, node.lhs);
-
-            res.block = @enumFromInt(node.rhs);
-            res.name.start = d.decodeOne();
-            res.name.len = d.decodeOne();
-            res.start = @enumFromInt(d.decodeOne());
-            res.step = @enumFromInt(d.decodeOne());
-            res.end = @enumFromInt(d.decodeOne());
-            return Key{ .for_loop = res };
-        },
-        .for_each => {
-            var res: @FieldType(Key, "for_each") = undefined;
-            var d = Decoder.init(extra, node.lhs);
-
-            const names_len = node.rhs;
-            const values_len = d.decodeOne();
-            res.block = @enumFromInt(d.decodeOne());
-            res.names = d.decode(Slice, names_len);
-            res.values = d.decode(NodeID, values_len);
-            return Key{ .for_each = res };
-        },
-        .func_decl,
-        .func_decl_variadic,
-        .func_decl_member,
-        .func_decl_member_variadic,
-        => {
-            const member = node.tag == .func_decl_member or node.tag == .func_decl_member_variadic;
-            const variadic = node.tag == .func_decl_variadic or node.tag == .func_decl_member_variadic;
-            return Key{
-                .func_decl = decodePayload(.func_decl, node, extra, .{
-                    .member = member,
-                    .variadic = variadic,
-                }),
-            };
-
-            // var res: @FieldType(Key, "func_decl") = undefined;
-            // var d = Decoder.init(extra, node.lhs);
-            //
-            // const names_len = node.rhs;
-            // const params_len = d.decodeOne();
-            // if (node.tag == .func_decl_member or node.tag == .func_decl_member_variadic) {
-            //     const start = d.decodeOne();
-            //     const len = d.decodeOne();
-            //     res.member = .{ .start = start, .len = len };
-            // }
-            // res.variadic = node.tag == .func_decl_variadic or node.tag == .func_decl_member_variadic;
-            // res.block = @enumFromInt(d.decodeOne());
-            // res.names = d.decode(Slice, names_len);
-            // res.params = d.decode(Slice, params_len);
-            // return Key{ .func_decl = res };
-        },
-        .func_local,
-        .func_local_variadic,
-        .func_anonym,
-        .func_anonym_variadic,
-        .local_decl,
-        .local_decl_init,
-
-        .identifier,
-        .literal_nil,
-        .literal_true,
-        .literal_false,
-        .literal_ellipsis,
-        .literal_int,
-        .literal_float,
-        .literal_string,
-        .table_contructor,
-        .func_call,
-        .func_call_member,
-
-        .logic_not,
-        .bit_not,
-        .negate,
-        .length,
-
-        .logic_or,
-        .logic_and,
-        .less_than,
-        .greater_than,
-        .less_equal,
-        .greater_equal,
-        .not_equal,
-        .equal,
-        .bit_or,
-        .bit_and,
-        .l_bit_shift,
-        .r_bit_shift,
-        .str_concat,
-        .add,
-        .sub,
-        .mul,
-        .div,
-        .int_div,
-        .modulo,
-        .exponent,
-        .dot_access,
-        .index_access,
-        => return .@"break",
-    }
-}
-
-fn Decoder(comptime U: type) type {
-    return struct {
-        node: Node,
-        extra: []const u32,
-        index: u32 = 0,
-        uses_extra: bool = false,
-
-        pub fn init(node: Node, extra: []const u32, sizeof: u32) Decoder {
-            const uses_extra = (sizeof > @sizeOf(u32) * 2);
-            return Decoder{
-                .node = node,
-                .extra = extra,
-                .index = if (uses_extra) 1 else 0,
-                .uses_extra = uses_extra,
-            };
-        }
-
-        pub fn get(self: *Decoder, comptime T: type, comptime name: [:0]const u8) T {
-            const info = @typeInfo(T);
-            switch (info) {
-                .bool => {
-                    return @field(U, name);
-                },
-                .optional => |opt| {
-                    return if (@field(U, name)) self.get(opt.child) else null;
-                },
-                .@"enum" => |e| {
-                    assert(@sizeOf(e.tag_type) == @sizeOf(u32));
-                    const foo = self.get(u32);
-                    return @enumFromInt(foo);
-                },
-                .pointer => |ptr| if (ptr.size == .slice) {
-                    assert(self.index > 0);
-                    const len = self.get(u32);
-                    const slice = self.extra[self.index..(self.index + len)];
-                    self.index += len;
-                    return slice;
-                } else {
-                    @compileError("Unsuported pointer type: " ++ @typeName(T));
-                },
-                else => {
-                    //
-                },
-            }
-        }
-    };
-}
-
-fn decodePayload(
-    comptime tag: meta.Tag(Key),
-    node: Node,
-    extra: []const u32,
-    args: anytype,
-) meta.TagPayload(Key, tag) {
-    const T = meta.TagPayload(Key, tag);
-    const U = @TypeOf(args);
-
-    comptime var sizeof: u32 = 0;
-    inline for (meta.fields(T)) |field| {
-        const info = @typeInfo(field.type);
-        sizeof += switch (info) {
-            .bool => 0,
-            .optional => |opt| if (@field(U, field.name)) @sizeOf(opt.child) else 0,
-            else => @sizeOf(field.type),
-        };
-    }
-
-    var res: T = undefined;
-    comptime var d = Decoder(U).init(node, extra, sizeof);
-
-    inline for (meta.fields(T)) |field| {
-        @field(res, field.name) = d.get(field.type);
-    }
-    return res;
 }
 
 test "semantic analyses" {
