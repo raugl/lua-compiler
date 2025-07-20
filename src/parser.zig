@@ -73,7 +73,7 @@ pub const ParseResult = struct {
     }
 
     pub fn get(self: ParseResult, id: ast.NodeID) ast.Key {
-        return ast.decodeKey(id, self.nodes, self.extra);
+        return ast.decodeKey(self.nodes, self.extra, id);
     }
 
     // TODO: Fuzz testing: rebuild the source code from an ast tree and compare it to the striped input
@@ -204,7 +204,7 @@ const Parser = struct {
 
     // PERF: the messages and nodes shouldn't be interleaved by using the same allocator
     extra: std.ArrayListUnmanaged(u32) = .empty,
-    nodes: std.ArrayListUnmanaged(ast.Node) = .empty,
+    nodes: std.MultiArrayList(ast.Node) = .empty,
     messages: std.ArrayListUnmanaged(Message) = .empty,
 
     pub fn init(alloc: mem.Allocator, scratch: mem.Allocator, lexer: lx.Lexer) Parser {
@@ -243,11 +243,11 @@ const Parser = struct {
 
     fn makeNode(
         self: *Parser,
-        comptime tag: meta.Tag(ast.Key),
+        comptime tag: ast.KeyTag,
         data: meta.TagPayload(ast.Key, tag),
     ) mem.Allocator.Error!ast.NodeID {
         const key = @unionInit(ast.Key, @tagName(tag), data);
-        return ast.encodeKey(self.alloc, key, &self.nodes, &self.extra);
+        return ast.encodeKey(self.alloc, &self.nodes, &self.extra, key);
     }
 
     // TODO:
@@ -276,9 +276,9 @@ const Parser = struct {
         }
     }
 
-    pub const parseChunk = parseBlock;
+    pub const parseChunk = expectBlock;
 
-    fn parseBlock(self: *Parser) mem.Allocator.Error!ast.NodeID {
+    fn expectBlock(self: *Parser) mem.Allocator.Error!ast.NodeID {
         var stats = std.ArrayList(ast.NodeID).init(self.scratch);
         defer stats.deinit();
 
@@ -350,7 +350,7 @@ const Parser = struct {
             },
             .@"(" => {
                 self.getToken();
-                const node = try self.expectExp(.none);
+                const node = try self.expectExp(.any);
                 self.expect(.@")");
                 return node;
             },
@@ -409,7 +409,7 @@ const Parser = struct {
                 const params, const variadic = try self.parseParamList();
                 defer self.scratch.free(params);
 
-                const block = try self.parseBlock();
+                const block = try self.expectBlock();
                 self.expect(.keyword_end);
 
                 return try self.makeNode(.func_anonym, .{
@@ -451,7 +451,6 @@ const Parser = struct {
         };
         const prec = self.curr_token.precedence(true);
         self.getToken();
-
 
         const rhs = try self.expectExp(prec);
         if (op == .index_access) {
@@ -503,13 +502,13 @@ const Parser = struct {
     }
 
     fn parseExpList(self: *Parser) mem.Allocator.Error!?[]const ast.NodeID {
-        if (try self.parseExp(.none)) |exp_| {
+        if (try self.parseExp(.any)) |exp_| {
             var args = std.ArrayList(ast.NodeID).init(self.scratch);
             errdefer args.deinit();
             try args.append(exp_);
 
             while (self.match(.@",")) {
-                const exp = try self.expectExp(.none);
+                const exp = try self.expectExp(.any);
                 try args.append(exp);
             }
             return try args.toOwnedSlice();
@@ -550,12 +549,12 @@ const Parser = struct {
         // field ::= ‘[’ exp ‘]’ ‘=’ exp | Name ‘=’ exp | exp
 
         if (self.match(.@"[")) {
-            const key = try self.expectExp(.none);
+            const key = try self.expectExp(.any);
             self.expect(.@"]");
             self.expect(.@"=");
             return ast.Field{
                 .key = key,
-                .value = try self.expectExp(.none),
+                .value = try self.expectExp(.any),
             };
         }
         if (self.match(.identifier)) {
@@ -564,10 +563,10 @@ const Parser = struct {
             self.expect(.@"=");
             return ast.Field{
                 .key = key,
-                .value = try self.expectExp(.none),
+                .value = try self.expectExp(.any),
             };
         }
-        if (try self.parseExp(.none)) |exp| {
+        if (try self.parseExp(.any)) |exp| {
             return ast.Field{ .value = exp };
         }
         return null;
@@ -618,15 +617,15 @@ const Parser = struct {
             },
             .keyword_do => {
                 self.getToken();
-                const block = try self.parseBlock();
+                const block = try self.expectBlock();
                 self.expect(.keyword_end);
                 return block;
             },
             .keyword_while => {
                 self.getToken();
-                const cond = try self.expectExp(.none);
+                const cond = try self.expectExp(.any);
                 self.expect(.keyword_do);
-                const block = try self.parseBlock();
+                const block = try self.expectBlock();
                 self.expect(.keyword_end);
                 return try self.makeNode(.while_loop, .{
                     .cond = cond,
@@ -635,9 +634,9 @@ const Parser = struct {
             },
             .keyword_repeat => {
                 self.getToken();
-                const block = try self.parseBlock();
+                const block = try self.expectBlock();
                 self.expect(.keyword_until);
-                const cond = try self.expectExp(.none);
+                const cond = try self.expectExp(.any);
                 self.expect(.keyword_end);
                 return try self.makeNode(.repeat_loop, .{
                     .cond = cond,
@@ -651,24 +650,20 @@ const Parser = struct {
 
                 while (true) {
                     const branch = try branches.addOne();
-                    branch.cond = try self.expectExp(.none);
+                    branch.cond = try self.expectExp(.any);
                     self.expect(.keyword_then);
-                    branch.block = try self.parseBlock();
+                    branch.block = try self.expectBlock();
 
                     if (!self.match(.keyword_elseif)) break;
                 }
+                var else_block: ?ast.NodeID = null;
                 if (self.match(.keyword_else)) {
-                    const else_block = try self.parseBlock();
-                    self.expect(.keyword_end);
-
-                    return try self.makeNode(.if_else, .{
-                        .branches = branches.items,
-                        .else_block = else_block,
-                    });
+                    else_block = try self.expectBlock();
                 }
                 self.expect(.keyword_end);
                 return try self.makeNode(.if_block, .{
                     .branches = branches.items,
+                    .else_block = else_block,
                 });
             },
             .keyword_for => {
@@ -676,30 +671,21 @@ const Parser = struct {
                 const name = self.expectName();
 
                 if (self.match(.@"=")) {
-                    const start = try self.expectExp(.none);
+                    const start = try self.expectExp(.any);
                     self.expect(.@",");
-                    const end = try self.expectExp(.none);
+                    const end = try self.expectExp(.any);
 
+                    var step: ?ast.NodeID = null;
                     if (self.match(.@",")) {
-                        const step = try self.expectExp(.none);
-                        self.expect(.keyword_do);
-                        const block = try self.parseBlock();
-                        self.expect(.keyword_end);
-
-                        return try self.makeNode(.for_loop, .{
-                            .name = name,
-                            .start = start,
-                            .step = step,
-                            .end = end,
-                            .block = block,
-                        });
+                        step = try self.expectExp(.any);
                     }
                     self.expect(.keyword_do);
-                    const block = try self.parseBlock();
+                    const block = try self.expectBlock();
                     self.expect(.keyword_end);
                     return try self.makeNode(.for_loop, .{
                         .name = name,
                         .start = start,
+                        .step = step,
                         .end = end,
                         .block = block,
                     });
@@ -717,7 +703,7 @@ const Parser = struct {
                     defer self.scratch.free(values);
 
                     self.expect(.keyword_do);
-                    const block = try self.parseBlock();
+                    const block = try self.expectBlock();
                     self.expect(.keyword_end);
 
                     return try self.makeNode(.for_each, .{
@@ -737,16 +723,13 @@ const Parser = struct {
                     try names.append(name);
                     if (!self.match(.@".")) break;
                 }
-
                 var member: ?ast.Slice = null;
                 if (self.match(.@":")) {
                     member = self.expectName();
                 }
-
                 const params, const variadic = try self.parseParamList();
                 defer self.scratch.free(params);
-
-                const block = try self.parseBlock();
+                const block = try self.expectBlock();
                 self.expect(.keyword_end);
 
                 return try self.makeNode(.func_decl, .{
@@ -764,8 +747,7 @@ const Parser = struct {
 
                     const params, const variadic = try self.parseParamList();
                     defer self.scratch.free(params);
-
-                    const block = try self.parseBlock();
+                    const block = try self.expectBlock();
                     self.expect(.keyword_end);
 
                     return try self.makeNode(.func_local, .{
@@ -783,7 +765,6 @@ const Parser = struct {
                         _ = self.parseAttrib() orelse {}; // NOTE: Discarding attributes
                         if (!self.match(.@",")) break;
                     }
-
                     if (self.match(.@"=")) {
                         const values = try self.expectExpList();
                         defer self.scratch.free(values);

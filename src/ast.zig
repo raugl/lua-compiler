@@ -3,6 +3,12 @@ const meta = std.meta;
 const mem = std.mem;
 const assert = std.debug.assert;
 
+// TODO: Scrap all of this, put it in a git branch, and use a
+// MultiArrayList(Key union) + push allocator for slices + little comptime
+// functions pair than can populate these two automatically. Bonus: I can then
+// benchmark both implementations and see real world gains of anal DoD vs
+// non-pessimizing code.
+
 pub const NodeID = enum(u32) {
     root = 0,
     none = 0xffff_ffff,
@@ -104,7 +110,7 @@ pub const BinaryOp = enum(u8) {
     index_access = @intFromEnum(NodeTag.index_access),
 };
 
-const KeyTag = enum(u8) {
+pub const KeyTag = enum(u8) {
     assignment = @intFromEnum(NodeTag.assignment),
     @"break" = @intFromEnum(NodeTag.@"break"),
     label = @intFromEnum(NodeTag.label),
@@ -113,7 +119,6 @@ const KeyTag = enum(u8) {
     repeat_loop = @intFromEnum(NodeTag.repeat_loop),
     while_loop = @intFromEnum(NodeTag.while_loop),
     if_block = @intFromEnum(NodeTag.if_block),
-    if_else = @intFromEnum(NodeTag.if_else),
     for_loop = @intFromEnum(NodeTag.for_loop),
     for_each = @intFromEnum(NodeTag.for_each),
     func_decl = @intFromEnum(NodeTag.func_decl),
@@ -166,11 +171,7 @@ pub const NodeBlock = struct {
 pub const NodeIf = struct {
     // PERF: Introduce an if block without elseifs, this would fully fit in a single Node
     branches: []const Conditional,
-};
-
-pub const NodeIfElse = struct {
-    branches: []const Conditional,
-    else_block: NodeID,
+    else_block: ?NodeID,
 };
 
 pub const NodeFor = struct {
@@ -264,7 +265,6 @@ pub const Key = union(KeyTag) {
     repeat_loop: NodeRepeat,
     while_loop: NodeWhile,
     if_block: NodeIf,
-    if_else: NodeIfElse,
     for_loop: NodeFor,
     for_each: NodeForEach,
     func_decl: NodeFuncDecl,
@@ -287,9 +287,9 @@ pub const Key = union(KeyTag) {
 
 pub fn encodeKey(
     alloc: mem.Allocator,
-    node: Key,
-    nodes: *std.ArrayListUnmanaged(Node),
+    nodes: *std.MultiArrayList(Node),
     extra: *std.ArrayListUnmanaged(u32),
+    node: Key,
 ) mem.Allocator.Error!NodeID {
     switch (node) {
         .@"break",
@@ -300,70 +300,90 @@ pub fn encodeKey(
         => {
             return @enumFromInt(@intFromEnum(node));
         },
+        .if_block => |data| {
+            const tag: NodeTag = if (data.else_block) |_| .if_else else .if_block;
+            return try encodeKeyImpl(alloc, extra, nodes, tag, data);
+        },
         .for_loop => |data| {
             const tag: NodeTag = if (data.step) |_| .for_loop_step else .for_loop;
-            return try encodeKeyImpl(alloc, nodes, extra, tag, data);
+            return try encodeKeyImpl(alloc, extra, nodes, tag, data);
         },
         .func_decl => |data| {
             const tag: NodeTag = switch (data.variadic) {
                 true => if (data.member) |_| .func_decl_member_variadic else .func_decl_variadic,
                 false => if (data.member) |_| .func_decl_member else .func_decl,
             };
-            return try encodeKeyImpl(alloc, nodes, extra, tag, data);
-        },
-        .func_local => |data| {
-            const tag: NodeTag = if (data.variadic) .func_local_variadic else .func_local;
-            return try encodeKeyImpl(alloc, nodes, extra, tag, data);
+            return try encodeKeyImpl(alloc, extra, nodes, tag, data);
         },
         .func_anonym => |data| {
             const tag: NodeTag = if (data.variadic) .func_anonym_variadic else .func_anonym;
-            return try encodeKeyImpl(alloc, nodes, extra, tag, data);
+            return try encodeKeyImpl(alloc, extra, nodes, tag, data);
+        },
+        .func_local => |data| {
+            const tag: NodeTag = if (data.variadic) .func_local_variadic else .func_local;
+            return try encodeKeyImpl(alloc, extra, nodes, tag, data);
+        },
+        .local_decl => |data| {
+            const tag: NodeTag = if (data.values.len > 0) .local_decl_init else .local_decl;
+            return try encodeKeyImpl(alloc, extra, nodes, tag, data); // TODO: Remove the len when values is empty
         },
         inline .unary_op, .binary_op => |data| {
-            const tag = @intFromEnum(data.op);
-            return try encodeKeyImpl(alloc, nodes, extra, @enumFromInt(tag), data);
+            const tag: NodeTag = @enumFromInt(@intFromEnum(data.op));
+            return try encodeKeyImpl(alloc, extra, nodes, tag, data);
         },
         inline else => |data| {
             const tag: NodeTag = @enumFromInt(@intFromEnum(node));
-            return try encodeKeyImpl(alloc, nodes, extra, tag, data);
+            return try encodeKeyImpl(alloc, extra, nodes, tag, data); // FIXME
         },
     }
 }
 
+fn sizeOf(comptime T: type, data: anytype) usize {
+    var sizeof: usize = 0;
+    switch (@typeInfo(T)) {
+        .int, .float, .array => {
+            sizeof += @sizeOf(T);
+        },
+        .@"enum" => {
+            if (T == NodeID) sizeof += 4;
+        },
+        .optional => |opt| {
+            const info = @typeInfo(@TypeOf(data));
+            if (info == .bool and data != false) sizeof += @sizeOf(opt.child);
+            if (info == .optional and data != null) sizeof += @sizeOf(opt.child);
+        },
+        .pointer => |ptr| {
+            if (ptr.size == .slice) {
+                sizeof += 4 + data.len;
+            } else {
+                @compileError("Undecodable pointner type: " ++ @typeName(T));
+            }
+        },
+        .@"struct" => {
+            inline for (meta.fields(T)) |field| {
+                const sub = tryDrill(data, field.name);
+                sizeof += sizeOf(field.type, sub);
+            }
+        },
+        else => return 0,
+    }
+    return sizeof;
+}
+
 fn encodeKeyImpl(
     alloc: mem.Allocator,
-    nodes: *std.ArrayListUnmanaged(Node),
     extra: *std.ArrayListUnmanaged(u32),
+    nodes: *std.MultiArrayList(Node),
     tag: NodeTag,
     data: anytype,
 ) mem.Allocator.Error!NodeID {
-    const T = @TypeOf(data);
-    var sizeof: u32 = 0;
-    var use_extra = false;
+    const use_extra = sizeOf(@TypeOf(data), data) > 8;
+    var e = Encoder.init(alloc, extra, use_extra);
 
-    inline for (meta.fields(T)) |field| {
-        const info = @typeInfo(field.type);
-        switch (info) {
-            .optional => |opt| if (@field(data, field.name)) |_| {
-                sizeof += @sizeOf(opt.child);
-            },
-            .pointer => |ptr| {
-                if (ptr.size == .slice) {
-                    use_extra = true;
-                    break;
-                }
-                @compileError("Unencodable pointner type: " ++ @typeName(T));
-            },
-            .bool => continue,
-            else => sizeof += @sizeOf(field.type),
-        }
-    }
-    const id = nodes.items.len;
-    const node = try nodes.addOne(alloc);
+    const id = try nodes.addOne(alloc);
+    var node = try e.put(data);
     node.tag = tag;
-
-    var e = Encoder.init(alloc, extra, node, use_extra or sizeof > 8);
-    try e.put(data);
+    nodes.set(id, node);
     return @enumFromInt(id);
 }
 
@@ -376,7 +396,7 @@ const Encoder = struct {
     fn init(
         alloc: mem.Allocator,
         extra: *std.ArrayListUnmanaged(u32),
-        node: *Node,
+        // node: *Node,
         use_extra: bool,
     ) Encoder {
         if (use_extra) node.data.lhs = @intCast(extra.items.len);
@@ -445,16 +465,16 @@ const Encoder = struct {
 };
 
 pub fn decodeKey(
-    node_id: NodeID,
     nodes: []const Node,
     extra: []const u32,
+    node_id: NodeID,
 ) Key {
     const node = nodes[@intFromEnum(node_id)];
 
     return switch (node.tag) {
         .for_loop,
         .for_loop_step,
-        => decodeKeyImpl(.for_loop, node, extra, .{
+        => decodeKeyImpl(.for_loop, extra, node, .{
             .step = (node.tag == .for_loop_step),
         }),
         .func_decl,
@@ -524,32 +544,13 @@ pub fn decodeKey(
 // PERF: Encode value-less variants inside the NodeID
 fn decodeKeyImpl(
     comptime tag: KeyTag,
-    node: Node,
     extra: []const u32,
+    node: Node,
     args: anytype,
 ) Key {
     const T = meta.TagPayload(Key, tag);
-    var sizeof: u32 = 0;
-    var use_extra = false;
-
-    inline for (meta.fields(T)) |field| {
-        const info = @typeInfo(field.type);
-        switch (info) {
-            .optional => |opt| if (@field(args, field.name)) {
-                sizeof += @sizeOf(opt.child);
-            },
-            .pointer => |ptr| {
-                if (ptr.size == .slice) {
-                    use_extra = true;
-                    break;
-                }
-                @compileError("Undecodable pointner type: " ++ @typeName(T));
-            },
-            .bool => continue,
-            else => sizeof += @sizeOf(field.type),
-        }
-    }
-    var d = Decoder.init(node, extra, use_extra or sizeof > 8);
+    const use_extra = sizeOf(T, args) > 8;
+    var d = Decoder.init(node, extra, use_extra);
     return @unionInit(Key, @tagName(tag), d.get(T, args));
 }
 
@@ -617,11 +618,8 @@ const Decoder = struct {
             .@"struct" => {
                 var res: T = undefined;
                 inline for (meta.fields(T)) |field| {
-                    if (tryDrill(args, field.name)) |arg| {
-                        @field(res, field.name) = self.get(field.type, arg);
-                    } else {
-                        @field(res, field.name) = self.get(field.type, .{});
-                    }
+                    const arg = tryDrill(args, field.name);
+                    @field(res, field.name) = self.get(field.type, arg);
                 }
                 return res;
             },
@@ -634,15 +632,15 @@ fn TryDrillRes(comptime T: type, comptime field_name: []const u8) type {
     if (@typeInfo(T) == .@"struct" and @hasField(T, field_name)) {
         return @FieldType(T, field_name);
     }
-    return void;
+    return struct {};
 }
 
-fn tryDrill(value: anytype, comptime field_name: []const u8) ?TryDrillRes(@TypeOf(value), field_name) {
+fn tryDrill(value: anytype, comptime field_name: []const u8) TryDrillRes(@TypeOf(value), field_name) {
     const T = @TypeOf(value);
     if (@typeInfo(T) == .@"struct" and @hasField(T, field_name)) {
         return @field(value, field_name);
     }
-    return null;
+    return .{};
 }
 
 test "semantic analyses" {

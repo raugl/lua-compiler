@@ -5,7 +5,7 @@ const std = @import("std");
 // TODO: Setup fuzz testing
 
 pub const Precedence = enum(u8) {
-    none,
+    any,
     logic_or,
     logic_and,
     comparison,
@@ -125,7 +125,7 @@ pub const Token = struct {
             .@"#", .@"~", .keyword_not => .negate,
             .@"-" => if (is_prefix) .negate else .add,
             .@"^" => .exponent,
-            else => .none,
+            else => .any,
         };
     }
 
