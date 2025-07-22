@@ -60,133 +60,132 @@ const ast = @import("ast.zig");
 const lx = @import("lexer.zig");
 
 const meta = std.meta;
+const heap = std.heap;
 const mem = std.mem;
-
-pub const ParseResult = struct {
-    nodes: []const ast.Node,
-    extra: []const u32,
-    // messages: []Message, // TODO
-
-    pub fn deinit(self: ParseResult, alloc: mem.Allocator) void {
-        alloc.free(self.nodes);
-        alloc.free(self.extra);
-    }
-
-    pub fn get(self: ParseResult, id: ast.NodeID) ast.Key {
-        return ast.decodeKey(id, self.nodes, self.extra);
-    }
-
-    // TODO: Fuzz testing: rebuild the source code from an ast tree and compare it to the striped input
-    // TODO: Change traversal to iterative implementation
-    pub fn print(
-        self: ParseResult,
-        writer: std.io.AnyWriter,
-        node_id: ast.NodeID,
-    ) !void {
-        switch (self.get(node_id)) {
-            .block => |node| {
-                for (node.statements) |stat| {
-                    try self.print(writer, stat);
-                    try writer.writeByte('\n');
-                }
-                if (node.return_list.len > 0) {
-                    try writer.writeAll("return ");
-                    for (node.return_list) |val| {
-                        try self.print(writer, val);
-                        try writer.writeByte(',');
-                    }
-                }
-            },
-            .if_block => |node| {
-                try writer.writeAll("if ");
-                for (node.branches, 0..) |branch, i| {
-                    try self.print(writer, branch.cond);
-                    try writer.writeAll(" then\n");
-                    try self.print(writer, branch.block);
-                    if (i < node.branches.len - 1) {
-                        try writer.writeAll("\nelseif ");
-                    }
-                }
-                try writer.writeAll("\nend");
-            },
-            .unary_op => |node| {
-                const lexeme = switch (node.op) {
-                    .length => "#",
-                    .negate => "-",
-                    .bit_not => "~",
-                    .logic_not => "not ",
-                };
-                try writer.writeAll(lexeme);
-                try self.print(writer, node.exp);
-            },
-            .binary_op => |node| {
-                const lexeme = switch (node.op) {
-                    .logic_or => " or ",
-                    .logic_and => " and ",
-                    .less_than => " < ",
-                    .greater_than => " > ",
-                    .less_equal => " <= ",
-                    .greater_equal => " >= ",
-                    .not_equal => " ~= ",
-                    .equal => " == ",
-                    .bit_or => " | ",
-                    .bit_and => " & ",
-                    .l_bit_shift => " << ",
-                    .r_bit_shift => " >> ",
-                    .str_concat => " .. ",
-                    .add => " + ",
-                    .sub => " - ",
-                    .mul => " * ",
-                    .div => " /",
-                    .int_div => " // ",
-                    .modulo => " % ",
-                    .exponent => " ^ ",
-                    .dot_access => ".",
-                    .index_access => "[",
-                };
-                try self.print(writer, node.lhs);
-                try writer.writeAll(lexeme);
-                try self.print(writer, node.rhs);
-                if (node.op == .index_access) try writer.writeByte(']');
-            },
-            else => {
-                try writer.writeAll("unknown");
-            },
-        }
-    }
-};
-
-/// The caller owns the memory, and shoud free it with `res.deinit(alloc)`. To get
-/// a node, use `res.get(node_id)`, and to get the root node use `res.get(.root)`.
-pub fn parse(
-    alloc: mem.Allocator,
-    scratch: mem.Allocator,
-    lexer: lx.Lexer,
-) mem.Allocator.Error!ParseResult {
-    var self = Parser.init(alloc, scratch, lexer);
-    const head = try self.nodes.addOne(alloc);
-    const chunk = try self.parseChunk();
-    head.* = self.nodes.items[@intFromEnum(chunk)];
-
-    const nodes = try self.nodes.toOwnedSlice(alloc);
-    errdefer alloc.free(nodes);
-    const extra = try self.extra.toOwnedSlice(alloc);
-    errdefer alloc.free(extra);
-
-    return ParseResult{ .nodes = nodes, .extra = extra };
-}
 
 /// The caller owns the memory inside `ParseResult`, and shoud free it with
 /// `result.deinit(alloc)`. To get a node, use `result.get(node_id)`, and to get
 /// the root node use `result.get(.root)`.
-pub fn parseText(
-    alloc: mem.Allocator,
-    scratch: mem.Allocator,
-    text: [:0]const u8,
-) mem.Allocator.Error!ParseResult {
-    const lexer = lx.Lexer.init(text);
-    return parse(alloc, scratch, lexer);
+pub fn parseText(alloc: mem.Allocator, source: [:0]const u8) mem.Allocator.Error!ParseResult {
+    const lexer = lx.Lexer.init(source);
+    return parse(alloc, lexer);
 }
+
+/// The caller owns the memory, and shoud free it with `res.deinit(alloc)`. To get
+/// a node, use `res.get(node_id)`, and to get the root node use `res.get(.root)`.
+pub fn parse(alloc: mem.Allocator, lexer: lx.Lexer) mem.Allocator.Error!ParseResult {
+    // TODO: choose lenght function empirical data
+    const buffer_len = lexer.buffer.len;
+    const buffer = try heap.page_allocator.alloc(u8, buffer_len);
+    var self = Parser.init(alloc, lexer, buffer);
+
+    // The tree is built in post order, but I want the root to be at index 0, so
+    // I allocate space for it, parse the tree, then swap the first and last nodes
+    _ = try self.nodes.addOne(alloc);
+    _ = try self.parseChunk();
+    self.nodes.swapRemove(0);
+    // TODO: Expect no trailing tokens
+
+    return ParseResult{
+        .nodes = self.nodes.toOwnedSlice(),
+        .extra = self.extra.buffer,
+    };
+}
+
+pub const ParseResult = struct {
+    extra: []const u8,
+    nodes: std.MultiArrayList(ast.Node).Slice,
+    // messages: []Message, // TODO
+
+    pub fn deinit(self: *ParseResult, alloc: mem.Allocator) void {
+        heap.page_allocator.free(self.extra);
+        self.nodes.deinit(alloc);
+    }
+
+    pub fn get(self: ParseResult, id: ast.NodeID) ast.Node {
+        return self.nodes.get(@intFromEnum(id));
+    }
+
+    // TODO: Fuzz testing: rebuild the source code from an ast tree and compare it to the striped input
+    // TODO: Change traversal to iterative implementation
+    // pub fn print(
+    //     self: ParseResult,
+    //     writer: std.io.AnyWriter,
+    //     node_id: ast.NodeID,
+    // ) !void {
+    //     const node = self.get(node_id);
+    //     switch (node) {
+    //         .block => |data| {
+    //             for (data.statements.items(self.extra)) |stat| {
+    //                 try self.print(writer, stat);
+    //                 try writer.writeByte('\n');
+    //             }
+    //             if (data.ret_values.len > 0) {
+    //                 try writer.writeAll("return ");
+    //                 for (data.ret_values.items(self.extra)) |val| {
+    //                     try self.print(writer, val);
+    //                     try writer.writeByte(',');
+    //                 }
+    //             }
+    //         },
+    //         .if_block => |data| {
+    //             try writer.writeAll("if ");
+    //             for (data.elseifs.items(self.extra), 0..) |branch, i| {
+    //                 try self.print(writer, branch.cond);
+    //                 try writer.writeAll(" then\n");
+    //                 try self.print(writer, branch.block);
+    //                 if (i < data.elseifs.len - 1) {
+    //                     try writer.writeAll("\nelseif ");
+    //                 }
+    //             }
+    //             try writer.writeAll("\nend");
+    //         },
+    //         .unary_op => |data| {
+    //             const lexeme = switch (data.op) {
+    //                 .length => "#",
+    //                 .negate => "-",
+    //                 .bit_not => "~",
+    //                 .logic_not => "not ",
+    //             };
+    //             try writer.writeAll(lexeme);
+    //             try self.print(writer, data.exp);
+    //         },
+    //         .binary_op => |data| {
+    //             const lexeme = switch (data.op) {
+    //                 .logic_or => " or ",
+    //                 .logic_and => " and ",
+    //                 .less_than => " < ",
+    //                 .greater_than => " > ",
+    //                 .less_equal => " <= ",
+    //                 .greater_equal => " >= ",
+    //                 .not_equal => " ~= ",
+    //                 .equal => " == ",
+    //                 .bit_or => " | ",
+    //                 .bit_and => " & ",
+    //                 .l_bit_shift => " << ",
+    //                 .r_bit_shift => " >> ",
+    //                 .str_concat => " .. ",
+    //                 .add => " + ",
+    //                 .sub => " - ",
+    //                 .mul => " * ",
+    //                 .div => " /",
+    //                 .int_div => " // ",
+    //                 .modulo => " % ",
+    //                 .exponent => " ^ ",
+    //                 .dot_access => ".",
+    //                 .index_access => "[",
+    //             };
+    //             try self.print(writer, data.lhs);
+    //             try writer.writeAll(lexeme);
+    //             try self.print(writer, data.rhs);
+    //             if (data.op == .index_access) try writer.writeByte(']');
+    //         },
+    //         else => {
+    //             try writer.writeAll("unknown");
+    //         },
+    //     }
+    // }
+};
 
 const Message = struct {
     loc: lx.Location,
@@ -200,32 +199,35 @@ const Parser = struct {
     next_token: lx.Token,
 
     alloc: mem.Allocator,
-    scratch: mem.Allocator,
+    nodes: std.MultiArrayList(ast.Node) = .empty,
+    extra: struct {
+        buffer: []u8,
+        arena: heap.FixedBufferAllocator,
+        alloc: mem.Allocator,
+    },
 
+    // TODO:
     // PERF: the messages and nodes shouldn't be interleaved by using the same allocator
-    extra: std.ArrayListUnmanaged(u32) = .empty,
-    nodes: std.ArrayListUnmanaged(ast.Node) = .empty,
-    messages: std.ArrayListUnmanaged(Message) = .empty,
+    // messages: std.ArrayListUnmanaged(Message) = .empty,
 
-    pub fn init(alloc: mem.Allocator, scratch: mem.Allocator, lexer: lx.Lexer) Parser {
+    pub fn init(alloc: mem.Allocator, lexer: lx.Lexer, extra_buffer: []u8) Parser {
+        var extra_arena = heap.FixedBufferAllocator.init(extra_buffer);
+        const extra_alloc = extra_arena.allocator();
+
         var self = Parser{
             .lexer = lexer,
-            .alloc = alloc,
-            .scratch = scratch,
             .curr_token = undefined,
             .next_token = undefined,
+            .alloc = alloc,
+            .extra = .{
+                .buffer = extra_buffer,
+                .arena = extra_arena,
+                .alloc = extra_alloc,
+            },
         };
         self.getTokenUnchecked();
         self.getTokenUnchecked();
         return self;
-    }
-
-    fn getTokenUnchecked(self: *Parser) void {
-        self.curr_token = self.next_token;
-        while (true) {
-            self.next_token = self.lexer.next();
-            if (self.next_token.tag != .comment) break;
-        }
     }
 
     fn getToken(self: *Parser) void {
@@ -236,6 +238,14 @@ const Parser = struct {
         }
     }
 
+    fn getTokenUnchecked(self: *Parser) void {
+        self.curr_token = self.next_token;
+        while (true) {
+            self.next_token = self.lexer.next();
+            if (self.next_token.tag != .comment) break;
+        }
+    }
+
     // FIXME: this way char token won't be wrapped in quotes
     fn getSource(self: Parser, token: lx.Token) []const u8 {
         return self.lexer.buffer[token.loc.start..token.loc.end];
@@ -243,11 +253,11 @@ const Parser = struct {
 
     fn makeNode(
         self: *Parser,
-        comptime tag: meta.Tag(ast.Key),
-        data: meta.TagPayload(ast.Key, tag),
+        comptime tag: meta.Tag(ast.Node),
+        data: meta.TagPayload(ast.Node, tag),
     ) mem.Allocator.Error!ast.NodeID {
-        const key = @unionInit(ast.Key, @tagName(tag), data);
-        return ast.encodeKey(self.alloc, key, &self.nodes, &self.extra);
+        const node = @unionInit(ast.Node, @tagName(tag), data);
+        return ast.encodeKey(self.alloc, node, &self.nodes, &self.extra);
     }
 
     // TODO:
@@ -279,23 +289,23 @@ const Parser = struct {
     pub const parseChunk = parseBlock;
 
     fn parseBlock(self: *Parser) mem.Allocator.Error!ast.NodeID {
-        var stats = std.ArrayList(ast.NodeID).init(self.scratch);
-        defer stats.deinit();
+        var stats = std.ArrayList(ast.NodeID).init(self.extra.alloc);
+        errdefer stats.deinit();
 
         while (try self.parseStatement()) |stat| {
             try stats.append(stat);
         }
 
-        var return_list: []const ast.NodeID = &.{};
+        var ret_values: []const ast.NodeID = &.{};
         if (self.match(.keyword_return)) {
-            return_list = try self.parseExpList() orelse &.{};
+            ret_values = try self.parseExpList() orelse &.{};
             _ = self.match(.@";");
         }
-        defer self.scratch.free(return_list);
+        defer self.scratch.free(ret_values);
 
         return self.makeNode(.block, .{
             .statements = stats.items,
-            .return_list = return_list,
+            .ret_values = ret_values,
         });
     }
 
@@ -451,7 +461,6 @@ const Parser = struct {
         };
         const prec = self.curr_token.precedence(true);
         self.getToken();
-
 
         const rhs = try self.expectExp(prec);
         if (op == .index_access) {

@@ -42,7 +42,7 @@ pub fn main() !void {
     //     \\ }
     // ;
 
-    const result = try parser.parseText(gpa, scratch,
+    const result = try parser.parseText(gpa,
         \\ if not (vim.uv or vim.loop).fs_stat(lazypath) then end
     );
     defer result.deinit(gpa);
